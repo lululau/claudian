@@ -14,6 +14,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   background: var(--background-primary);
+  margin-bottom: 80px;
 }
 
 /* Context row (file chip start, selection indicator end) - inside input wrapper at top */

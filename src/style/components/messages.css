@@ -89,6 +89,8 @@
 .claudian-text-block {
   position: relative;
   margin: 0;
+  font-size: 15px;
+  font-family: 'LXGWWenKaiMono-Regular';
 }
 
 .claudian-text-copy-btn {
