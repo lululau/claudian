@@ -1,6 +1,15 @@
 import type { ClaudianService } from '../../../core/agent';
 import { extractResolvedAnswers, extractResolvedAnswersFromResultText, parseTodoInput } from '../../../core/tools';
-import { isWriteEditTool, skipsBlockedDetection, TOOL_AGENT_OUTPUT, TOOL_ASK_USER_QUESTION, TOOL_TASK, TOOL_TODO_WRITE, TOOL_WRITE } from '../../../core/tools/toolNames';
+import {
+  isSubagentToolName,
+  isWriteEditTool,
+  skipsBlockedDetection,
+  TOOL_AGENT_OUTPUT,
+  TOOL_ASK_USER_QUESTION,
+  TOOL_TASK,
+  TOOL_TODO_WRITE,
+  TOOL_WRITE,
+} from '../../../core/tools/toolNames';
 import type { ChatMessage, StreamChunk, SubagentInfo, ToolCallInfo } from '../../../core/types';
 import type { SDKToolUseResult } from '../../../core/types/diff';
 import type ClaudianPlugin from '../../../main';
@@ -88,8 +97,8 @@ export class StreamController {
         }
         this.finalizeCurrentTextBlock(msg);
 
-        if (chunk.name === TOOL_TASK) {
-          // Flush pending tools before Task
+        if (isSubagentToolName(chunk.name)) {
+          // Flush pending tools before Agent
           this.flushPendingTools();
           this.handleTaskToolUseViaManager(chunk, msg);
           break;
@@ -162,6 +171,16 @@ export class StreamController {
         }
         if (!state.ignoreUsageUpdates) {
           state.usage = chunk.usage;
+        }
+        break;
+      }
+
+      case 'context_window_update': {
+        // Authoritative context window from SDK result — override heuristic value
+        if (state.usage && chunk.contextWindow > 0) {
+          const contextWindow = chunk.contextWindow;
+          const percentage = Math.min(100, Math.max(0, Math.round((state.usage.contextTokens / contextWindow) * 100)));
+          state.usage = { ...state.usage, contextWindow, percentage };
         }
         break;
       }
@@ -456,10 +475,10 @@ export class StreamController {
   }
 
   // ============================================
-  // Task Tool Handling (via SubagentManager)
+  // Subagent Tool Handling (via SubagentManager)
   // ============================================
 
-  /** Delegates Task tool_use to SubagentManager and updates message based on result. */
+  /** Delegates Agent tool_use to SubagentManager and updates message based on result. */
   private handleTaskToolUseViaManager(
     chunk: { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> },
     msg: ChatMessage
@@ -486,7 +505,7 @@ export class StreamController {
     }
   }
 
-  /** Renders a pending Task via SubagentManager and updates message. */
+  /** Renders a pending Agent tool call via SubagentManager and updates message. */
   private renderPendingTaskViaManager(toolId: string, msg: ChatMessage): void {
     const result = this.deps.subagentManager.renderPendingTask(toolId, this.deps.state.currentContentEl);
     if (!result) return;
@@ -498,7 +517,7 @@ export class StreamController {
     }
   }
 
-  /** Resolves a pending Task when its own tool_result arrives. */
+  /** Resolves a pending Agent tool call when its own tool_result arrives. */
   private renderPendingTaskFromTaskResultViaManager(
     chunk: { id: string; content: string; isError?: boolean; toolUseResult?: unknown },
     msg: ChatMessage
@@ -549,7 +568,7 @@ export class StreamController {
     const parentToolUseId = chunk.parentToolUseId;
     const { subagentManager } = this.deps;
 
-    // If parent Task is still pending, child chunk confirms it's sync - render now
+    // If parent Agent call is still pending, child chunk confirms it's sync - render now
     if (subagentManager.hasPendingTask(parentToolUseId)) {
       this.renderPendingTaskViaManager(parentToolUseId, msg);
     }
@@ -591,7 +610,7 @@ export class StreamController {
     }
   }
 
-  /** Finalizes a sync subagent when its Task tool_result is received. */
+  /** Finalizes a sync subagent when its Agent tool_result is received. */
   private finalizeSubagent(
     chunk: { type: 'tool_result'; id: string; content: string; isError?: boolean; toolUseResult?: unknown },
     msg: ChatMessage
@@ -806,7 +825,7 @@ export class StreamController {
   ): ToolCallInfo {
     msg.toolCalls = msg.toolCalls || [];
     const existing = msg.toolCalls.find(
-      tc => tc.id === toolId && tc.name === TOOL_TASK
+      tc => tc.id === toolId && isSubagentToolName(tc.name)
     );
     if (existing) {
       if (input && Object.keys(input).length > 0) {
@@ -838,7 +857,7 @@ export class StreamController {
 
   private linkTaskToolCallToSubagent(msg: ChatMessage, subagent: SubagentInfo): boolean {
     const taskToolCall = msg.toolCalls?.find(
-      tc => tc.id === subagent.id && tc.name === TOOL_TASK
+      tc => tc.id === subagent.id && isSubagentToolName(tc.name)
     );
     if (!taskToolCall) return false;
     this.applySubagentToTaskToolCall(taskToolCall, subagent);

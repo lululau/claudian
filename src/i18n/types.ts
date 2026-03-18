@@ -141,7 +141,8 @@ export type TranslationKey =
   | 'settings.subagents.refreshFailed'
   | 'settings.subagents.deleteFailed'
   | 'settings.subagents.renameCleanupFailed'
-  | 'settings.subagents.saved'
+  | 'settings.subagents.created'
+  | 'settings.subagents.updated'
   | 'settings.subagents.deleted'
   | 'settings.subagents.duplicateName'
   | 'settings.subagents.descriptionRequired'
@@ -173,12 +174,15 @@ export type TranslationKey =
   | 'settings.loadUserSettings.desc'
   | 'settings.enableBlocklist.name'
   | 'settings.enableBlocklist.desc'
+  | 'settings.allowExternalAccess.name'
+  | 'settings.allowExternalAccess.desc'
   | 'settings.blockedCommands.name'
   | 'settings.blockedCommands.desc'
   | 'settings.blockedCommands.unixName'
   | 'settings.blockedCommands.unixDesc'
   | 'settings.exportPaths.name'
   | 'settings.exportPaths.desc'
+  | 'settings.exportPaths.disabledDesc'
 
   // Settings - Environment
   | 'settings.environment'
@@ -207,8 +211,10 @@ export type TranslationKey =
 
   // Settings - Advanced
   | 'settings.advanced'
-  | 'settings.show1MModel.name'
-  | 'settings.show1MModel.desc'
+  | 'settings.enableOpus1M.name'
+  | 'settings.enableOpus1M.desc'
+  | 'settings.enableSonnet1M.name'
+  | 'settings.enableSonnet1M.desc'
   | 'settings.enableChrome.name'
   | 'settings.enableChrome.desc'
   | 'settings.enableBangBash.name'

@@ -3,7 +3,7 @@
  */
 
 import type { Locale } from '../../i18n/types';
-import type { ClaudeModel, ThinkingBudget } from './models';
+import type { ClaudeModel, EffortLevel, ThinkingBudget } from './models';
 
 const UNIX_BLOCKED_COMMANDS = [
   'rm -rf',
@@ -239,17 +239,20 @@ export interface ClaudianSettings {
 
   // Security (Claudian-specific, CC uses permissions.deny instead)
   enableBlocklist: boolean;
+  allowExternalAccess: boolean;
   blockedCommands: PlatformBlockedCommands;
   permissionMode: PermissionMode;
 
   // Model & thinking (Claudian uses enum, CC uses full model ID string)
   model: ClaudeModel;
-  thinkingBudget: ThinkingBudget;
+  thinkingBudget: ThinkingBudget;  // Legacy token budget for custom models
+  effortLevel: EffortLevel;  // Effort level for adaptive thinking models
   enableAutoTitleGeneration: boolean;
   titleGenerationModel: string;  // Model for auto title generation (empty = auto)
-  show1MModel: boolean;  // Show Sonnet (1M) in model selector (requires Max subscription)
   enableChrome: boolean;  // Enable Chrome extension support (passes --chrome flag)
   enableBangBash: boolean;  // Enable ! bash mode for direct command execution
+  enableOpus1M: boolean;  // Show Opus 1M model variant (opus[1m])
+  enableSonnet1M: boolean;  // Show Sonnet 1M model variant (sonnet[1m])
 
   // Content settings
   excludedTags: string[];
@@ -265,7 +268,7 @@ export interface ClaudianSettings {
    * Custom context window limits for models configured via environment variables.
    * Keys are model IDs (from ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_*_MODEL env vars).
    * Values are token counts in range [1000, 10000000].
-   * Empty object means all models use default context limits (200k or 1M for Sonnet).
+   * Empty object means all models use default context limits (200k).
    */
   customContextLimits: Record<string, number>;
 
@@ -305,17 +308,20 @@ export const DEFAULT_SETTINGS: ClaudianSettings = {
 
   // Security
   enableBlocklist: true,
+  allowExternalAccess: false,
   blockedCommands: getDefaultBlockedCommands(),
   permissionMode: 'yolo',
 
   // Model & thinking
   model: 'haiku',
   thinkingBudget: 'off',
+  effortLevel: 'high',
   enableAutoTitleGeneration: true,
   titleGenerationModel: '',  // Empty = auto (ANTHROPIC_DEFAULT_HAIKU_MODEL or claude-haiku-4-5)
-  show1MModel: false,  // Hidden by default
   enableChrome: false,  // Disabled by default
   enableBangBash: false,  // Disabled by default
+  enableOpus1M: false,  // Disabled by default
+  enableSonnet1M: false,  // Disabled by default
 
   // Content settings
   excludedTags: [],

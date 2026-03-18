@@ -60,7 +60,6 @@ function createMockSettings(overrides: Partial<ClaudianSettings> = {}): Claudian
       focusInputKey: 'i',
     },
     claudeCliPath: '',
-    show1MModel: false,
     enableChrome: false,
     ...overrides,
   } as ClaudianSettings;
@@ -72,6 +71,7 @@ function createMockPersistentQueryConfig(
   return {
     model: 'sonnet',
     thinkingTokens: null,
+    effortLevel: null,
     permissionMode: 'yolo',
     systemPromptKey: 'key1',
     disallowedToolsKey: '',
@@ -81,7 +81,6 @@ function createMockPersistentQueryConfig(
     allowedExportPaths: [],
     settingSources: 'project',
     claudeCliPath: '/mock/claude',
-    show1MModel: false,
     enableChrome: false,
     ...overrides,
   };
@@ -149,22 +148,16 @@ describe('QueryOptionsBuilder', () => {
       expect(QueryOptionsBuilder.needsRestart(currentConfig, newConfig)).toBe(true);
     });
 
+    it('returns true when effortLevel changes', () => {
+      const currentConfig = createMockPersistentQueryConfig({ effortLevel: 'high' });
+      const newConfig = { ...currentConfig, effortLevel: 'low' as const };
+      expect(QueryOptionsBuilder.needsRestart(currentConfig, newConfig)).toBe(true);
+    });
+
     it('returns false when only model changes (dynamic update)', () => {
       const currentConfig = createMockPersistentQueryConfig();
       const newConfig = { ...currentConfig, model: 'claude-opus-4-5' };
       expect(QueryOptionsBuilder.needsRestart(currentConfig, newConfig)).toBe(false);
-    });
-
-    it('returns true when show1MModel changes from false to true', () => {
-      const currentConfig = createMockPersistentQueryConfig();
-      const newConfig = { ...currentConfig, show1MModel: true };
-      expect(QueryOptionsBuilder.needsRestart(currentConfig, newConfig)).toBe(true);
-    });
-
-    it('returns true when show1MModel changes from true to false', () => {
-      const currentConfig = createMockPersistentQueryConfig({ show1MModel: true });
-      const newConfig = { ...currentConfig, show1MModel: false };
-      expect(QueryOptionsBuilder.needsRestart(currentConfig, newConfig)).toBe(true);
     });
 
     it('returns true when enableChrome changes from false to true', () => {
@@ -224,6 +217,24 @@ describe('QueryOptionsBuilder', () => {
       const config = QueryOptionsBuilder.buildPersistentQueryConfig(ctx);
 
       expect(config.thinkingTokens).toBe(16000);
+    });
+
+    it('includes effortLevel for adaptive model', () => {
+      const ctx = createMockContext({
+        settings: createMockSettings({ model: 'sonnet', effortLevel: 'max' }),
+      });
+      const config = QueryOptionsBuilder.buildPersistentQueryConfig(ctx);
+
+      expect(config.effortLevel).toBe('max');
+    });
+
+    it('sets effortLevel to null for custom model', () => {
+      const ctx = createMockContext({
+        settings: createMockSettings({ model: 'custom-model', effortLevel: 'high' }),
+      });
+      const config = QueryOptionsBuilder.buildPersistentQueryConfig(ctx);
+
+      expect(config.effortLevel).toBeNull();
     });
 
     it('includes enableChrome from settings', () => {
@@ -307,10 +318,25 @@ describe('QueryOptionsBuilder', () => {
       expect(options.canUseTool).toBe(canUseTool);
     });
 
-    it('sets thinking tokens for high budget', () => {
+    it('sets adaptive thinking with effort for Claude models', () => {
       const ctx = {
         ...createMockContext({
-          settings: createMockSettings({ thinkingBudget: 'high' }),
+          settings: createMockSettings({ model: 'sonnet', effortLevel: 'max' }),
+        }),
+        abortController: new AbortController(),
+        hooks: {},
+      };
+      const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
+
+      expect(options.thinking).toEqual({ type: 'adaptive' });
+      expect(options.effort).toBe('max');
+      expect(options.maxThinkingTokens).toBeUndefined();
+    });
+
+    it('sets thinking tokens for custom models', () => {
+      const ctx = {
+        ...createMockContext({
+          settings: createMockSettings({ model: 'custom-model', thinkingBudget: 'high' }),
         }),
         abortController: new AbortController(),
         hooks: {},
@@ -318,6 +344,7 @@ describe('QueryOptionsBuilder', () => {
       const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
 
       expect(options.maxThinkingTokens).toBe(16000);
+      expect(options.thinking).toBeUndefined();
     });
 
     it('sets resume session ID when provided', () => {
@@ -330,35 +357,6 @@ describe('QueryOptionsBuilder', () => {
       const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
 
       expect(options.resume).toBe('session-123');
-    });
-
-    it('does not set betas when show1MModel is disabled', () => {
-      const ctx = {
-        ...createMockContext({
-          settings: createMockSettings({ model: 'sonnet', show1MModel: false }),
-        }),
-        abortController: new AbortController(),
-        hooks: {},
-      };
-      const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
-
-      expect(options.model).toBe('sonnet');
-      expect(options.betas).toBeUndefined();
-    });
-
-    it('sets betas for non-1M model when show1MModel is enabled', () => {
-      const ctx = {
-        ...createMockContext({
-          settings: createMockSettings({ model: 'sonnet', show1MModel: true }),
-        }),
-        abortController: new AbortController(),
-        hooks: {},
-      };
-      const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
-
-      expect(options.model).toBe('sonnet');
-      expect(options.betas).toBeDefined();
-      expect(options.betas).toContain('context-1m-2025-08-07');
     });
 
     it('sets extraArgs with chrome flag when enableChrome is enabled', () => {
@@ -555,37 +553,6 @@ describe('QueryOptionsBuilder', () => {
       const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
 
       expect(options.tools).toEqual(['Read', 'Grep']);
-    });
-
-    it('sets betas when show1MModel is enabled', () => {
-      const ctx = {
-        ...createMockContext({
-          settings: createMockSettings({ model: 'sonnet', show1MModel: true }),
-        }),
-        abortController: new AbortController(),
-        hooks: {},
-        hasEditorContext: false,
-      };
-      const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
-
-      expect(options.model).toBe('sonnet');
-      expect(options.betas).toBeDefined();
-      expect(options.betas).toContain('context-1m-2025-08-07');
-    });
-
-    it('does not set betas when show1MModel is disabled', () => {
-      const ctx = {
-        ...createMockContext({
-          settings: createMockSettings({ model: 'sonnet' }),
-        }),
-        abortController: new AbortController(),
-        hooks: {},
-        hasEditorContext: false,
-      };
-      const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
-
-      expect(options.model).toBe('sonnet');
-      expect(options.betas).toBeUndefined();
     });
 
     it('sets extraArgs with chrome flag when enableChrome is enabled', () => {

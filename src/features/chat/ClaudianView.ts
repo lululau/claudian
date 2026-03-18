@@ -1,7 +1,7 @@
 import type { EventRef, WorkspaceLeaf } from 'obsidian';
-import { ItemView, Notice, setIcon } from 'obsidian';
+import { ItemView, Notice, Scope, setIcon } from 'obsidian';
 
-import { VIEW_TYPE_CLAUDIAN } from '../../core/types';
+import { getContextWindowSize, VIEW_TYPE_CLAUDIAN } from '../../core/types';
 import type ClaudianPlugin from '../../main';
 import { LOGO_SVG } from './constants';
 import { TabBar, TabManager, updatePlanModeUI } from './tabs';
@@ -77,11 +77,20 @@ export class ClaudianView extends ItemView {
     return 'bot';
   }
 
-  /** Refreshes the model selector display (used after env var changes). */
+  /** Refreshes model-dependent UI across all tabs (used after settings/env changes). */
   refreshModelSelector(): void {
-    const activeTab = this.tabManager?.getActiveTab();
-    activeTab?.ui.modelSelector?.updateDisplay();
-    activeTab?.ui.modelSelector?.renderOptions();
+    const model = this.plugin.settings.model;
+    const contextWindow = getContextWindowSize(model, this.plugin.settings.customContextLimits);
+
+    for (const tab of this.tabManager?.getAllTabs() ?? []) {
+      if (tab.state.usage) {
+        const percentage = Math.min(100, Math.max(0, Math.round((tab.state.usage.contextTokens / contextWindow) * 100)));
+        tab.state.usage = { ...tab.state.usage, model, contextWindow, percentage };
+      }
+
+      tab.ui.modelSelector?.updateDisplay();
+      tab.ui.modelSelector?.renderOptions();
+    }
   }
 
   /** Updates hidden slash commands on all tabs (used after settings change). */
@@ -489,15 +498,16 @@ export class ClaudianView extends ItemView {
       }
     });
 
-    // View-scoped escape to cancel streaming (only when Claudian has focus)
-    this.registerDomEvent(this.containerEl, 'keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.isComposing) {
-        const activeTab = this.tabManager?.getActiveTab();
-        if (activeTab?.state.isStreaming) {
-          e.preventDefault();
-          activeTab.controllers.inputController?.cancelStreaming();
-        }
+    // Register Escape on the view's Obsidian Scope to prevent Obsidian from
+    // navigating away when Claudian is open as a main-area tab.
+    // Returning false consumes the event (preventDefault + stops scope propagation).
+    this.scope = new Scope(this.app.scope);
+    this.scope.register([], 'Escape', () => {
+      const activeTab = this.tabManager?.getActiveTab();
+      if (activeTab?.state.isStreaming) {
+        activeTab.controllers.inputController?.cancelStreaming();
       }
+      return false;
     });
 
     // Vault events - forward to active tab's file context manager

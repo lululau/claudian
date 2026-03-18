@@ -62,7 +62,7 @@ import type {
   SlashCommand,
   StreamChunk,
 } from '../types';
-import { resolveModelWithBetas, THINKING_BUDGETS } from '../types';
+import { isAdaptiveThinkingModel, THINKING_BUDGETS } from '../types';
 import { MessageChannel } from './MessageChannel';
 import {
   type ColdStartQueryContext,
@@ -500,6 +500,10 @@ export class ClaudianService {
       enableBlocklist: this.plugin.settings.enableBlocklist,
     }));
 
+    if (this.plugin.settings.allowExternalAccess) {
+      return { PreToolUse: [blocklistHook] };
+    }
+
     const vaultRestrictionHook = createVaultRestrictionHook({
       getPathAccessType: (p) => {
         if (!this.vaultPath) return 'vault';
@@ -613,7 +617,6 @@ export class ClaudianService {
   private getTransformOptions(modelOverride?: string) {
     return {
       intendedModel: modelOverride ?? this.plugin.settings.model,
-      is1MEnabled: this.plugin.settings.show1MModel ?? false,
       customContextLimits: this.plugin.settings.customContextLimits,
     };
   }
@@ -1108,32 +1111,31 @@ export class ClaudianService {
 
     const selectedModel = queryOptions?.model || this.plugin.settings.model;
     const permissionMode = this.plugin.settings.permissionMode;
-    const budgetSetting = this.plugin.settings.thinkingBudget;
-    const budgetConfig = THINKING_BUDGETS.find(b => b.value === budgetSetting);
-    const thinkingTokens = budgetConfig?.tokens ?? null;
 
-    // Model can always be updated dynamically (show1MModel change triggers restart)
-    const show1MModel = this.plugin.settings.show1MModel;
+    // Model can always be updated dynamically
     if (this.currentConfig && selectedModel !== this.currentConfig.model) {
-      const resolved = resolveModelWithBetas(selectedModel, show1MModel);
       try {
-        await this.persistentQuery.setModel(resolved.model);
+        await this.persistentQuery.setModel(selectedModel);
         this.currentConfig.model = selectedModel;
       } catch {
         new Notice('Failed to update model');
       }
     }
 
-    // Update thinking tokens if changed
-    const currentThinking = this.currentConfig?.thinkingTokens ?? null;
-    if (thinkingTokens !== currentThinking) {
-      try {
-        await this.persistentQuery.setMaxThinkingTokens(thinkingTokens);
-        if (this.currentConfig) {
-          this.currentConfig.thinkingTokens = thinkingTokens;
+    // Update thinking tokens for custom models (adaptive models don't need dynamic updates)
+    if (!isAdaptiveThinkingModel(selectedModel)) {
+      const budgetConfig = THINKING_BUDGETS.find(b => b.value === this.plugin.settings.thinkingBudget);
+      const thinkingTokens = budgetConfig?.tokens ?? null;
+      const currentThinking = this.currentConfig?.thinkingTokens ?? null;
+      if (thinkingTokens !== currentThinking) {
+        try {
+          await this.persistentQuery.setMaxThinkingTokens(thinkingTokens);
+          if (this.currentConfig) {
+            this.currentConfig.thinkingTokens = thinkingTokens;
+          }
+        } catch {
+          new Notice('Failed to update thinking budget');
         }
-      } catch {
-        new Notice('Failed to update thinking budget');
       }
     }
 

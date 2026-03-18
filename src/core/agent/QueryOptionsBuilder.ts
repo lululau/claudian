@@ -19,7 +19,7 @@ import type { McpServerManager } from '../mcp';
 import type { PluginManager } from '../plugins';
 import { buildSystemPrompt, type SystemPromptSettings } from '../prompts/mainAgent';
 import type { ClaudianSettings, PermissionMode } from '../types';
-import { resolveModelWithBetas, THINKING_BUDGETS } from '../types';
+import { isAdaptiveThinkingModel, THINKING_BUDGETS } from '../types';
 import { createCustomSpawnFunction } from './customSpawn';
 import {
   computeSystemPromptKey,
@@ -118,11 +118,10 @@ export class QueryOptionsBuilder {
     // Note: Permission mode is handled dynamically via setPermissionMode() in ClaudianService.
     // Since allowDangerouslySkipPermissions is always true, both directions work without restart.
 
-    // Beta flag presence is determined by show1MModel setting.
-    // If it changes, restart is required.
-    if (currentConfig.show1MModel !== newConfig.show1MModel) return true;
-
     if (currentConfig.enableChrome !== newConfig.enableChrome) return true;
+
+    // Effort level requires restart (no setEffort() on persistent query)
+    if (currentConfig.effortLevel !== newConfig.effortLevel) return true;
 
     // Export paths affect system prompt
     if (QueryOptionsBuilder.pathsChanged(currentConfig.allowedExportPaths, newConfig.allowedExportPaths)) {
@@ -146,6 +145,7 @@ export class QueryOptionsBuilder {
       mediaFolder: ctx.settings.mediaFolder,
       customPrompt: ctx.settings.systemPrompt,
       allowedExportPaths: ctx.settings.allowedExportPaths,
+      allowExternalAccess: ctx.settings.allowExternalAccess,
       vaultPath: ctx.vaultPath,
       userName: ctx.settings.userName,
     };
@@ -164,6 +164,7 @@ export class QueryOptionsBuilder {
     return {
       model: ctx.settings.model,
       thinkingTokens: thinkingTokens && thinkingTokens > 0 ? thinkingTokens : null,
+      effortLevel: isAdaptiveThinkingModel(ctx.settings.model) ? ctx.settings.effortLevel : null,
       permissionMode: ctx.settings.permissionMode,
       systemPromptKey: computeSystemPromptKey(systemPromptSettings),
       disallowedToolsKey,
@@ -173,7 +174,6 @@ export class QueryOptionsBuilder {
       allowedExportPaths: ctx.settings.allowedExportPaths,
       settingSources: ctx.settings.loadUserClaudeSettings ? 'user,project' : 'project',
       claudeCliPath: ctx.cliPath,
-      show1MModel: ctx.settings.show1MModel,
       enableChrome: ctx.settings.enableChrome,
     };
   }
@@ -182,11 +182,11 @@ export class QueryOptionsBuilder {
   static buildPersistentQueryOptions(ctx: PersistentQueryContext): Options {
     const permissionMode = ctx.settings.permissionMode;
 
-    const resolved = resolveModelWithBetas(ctx.settings.model, ctx.settings.show1MModel);
     const systemPrompt = buildSystemPrompt({
       mediaFolder: ctx.settings.mediaFolder,
       customPrompt: ctx.settings.systemPrompt,
       allowedExportPaths: ctx.settings.allowedExportPaths,
+      allowExternalAccess: ctx.settings.allowExternalAccess,
       vaultPath: ctx.vaultPath,
       userName: ctx.settings.userName,
     });
@@ -194,7 +194,7 @@ export class QueryOptionsBuilder {
     const options: Options = {
       cwd: ctx.vaultPath,
       systemPrompt,
-      model: resolved.model,
+      model: ctx.settings.model,
       abortController: ctx.abortController,
       pathToClaudeCodeExecutable: ctx.cliPath,
       settingSources: ctx.settings.loadUserClaudeSettings
@@ -208,10 +208,6 @@ export class QueryOptionsBuilder {
       includePartialMessages: true,
     };
 
-    if (resolved.betas) {
-      options.betas = resolved.betas;
-    }
-
     QueryOptionsBuilder.applyExtraArgs(options, ctx.settings);
 
     options.disallowedTools = [
@@ -221,7 +217,7 @@ export class QueryOptionsBuilder {
     ];
 
     QueryOptionsBuilder.applyPermissionMode(options, permissionMode, ctx.canUseTool);
-    QueryOptionsBuilder.applyThinkingBudget(options, ctx.settings.thinkingBudget);
+    QueryOptionsBuilder.applyThinking(options, ctx.settings, ctx.settings.model);
     options.hooks = ctx.hooks;
 
     options.enableFileCheckpointing = true;
@@ -250,11 +246,11 @@ export class QueryOptionsBuilder {
     const permissionMode = ctx.settings.permissionMode;
 
     const selectedModel = ctx.modelOverride ?? ctx.settings.model;
-    const resolved = resolveModelWithBetas(selectedModel, ctx.settings.show1MModel);
     const systemPrompt = buildSystemPrompt({
       mediaFolder: ctx.settings.mediaFolder,
       customPrompt: ctx.settings.systemPrompt,
       allowedExportPaths: ctx.settings.allowedExportPaths,
+      allowExternalAccess: ctx.settings.allowExternalAccess,
       vaultPath: ctx.vaultPath,
       userName: ctx.settings.userName,
     });
@@ -262,7 +258,7 @@ export class QueryOptionsBuilder {
     const options: Options = {
       cwd: ctx.vaultPath,
       systemPrompt,
-      model: resolved.model,
+      model: selectedModel,
       abortController: ctx.abortController,
       pathToClaudeCodeExecutable: ctx.cliPath,
       // User settings may contain permission rules that bypass Claudian's permission system
@@ -276,10 +272,6 @@ export class QueryOptionsBuilder {
       },
       includePartialMessages: true,
     };
-
-    if (resolved.betas) {
-      options.betas = resolved.betas;
-    }
 
     QueryOptionsBuilder.applyExtraArgs(options, ctx.settings);
 
@@ -301,7 +293,7 @@ export class QueryOptionsBuilder {
 
     QueryOptionsBuilder.applyPermissionMode(options, permissionMode, ctx.canUseTool);
     options.hooks = ctx.hooks;
-    QueryOptionsBuilder.applyThinkingBudget(options, ctx.settings.thinkingBudget);
+    QueryOptionsBuilder.applyThinking(options, ctx.settings, ctx.modelOverride ?? ctx.settings.model);
 
     if (ctx.allowedTools !== undefined && ctx.allowedTools.length > 0) {
       options.tools = ctx.allowedTools;
@@ -350,13 +342,19 @@ export class QueryOptionsBuilder {
     }
   }
 
-  private static applyThinkingBudget(
+  private static applyThinking(
     options: Options,
-    budgetSetting: string
+    settings: ClaudianSettings,
+    model: string
   ): void {
-    const budgetConfig = THINKING_BUDGETS.find(b => b.value === budgetSetting);
-    if (budgetConfig && budgetConfig.tokens > 0) {
-      options.maxThinkingTokens = budgetConfig.tokens;
+    if (isAdaptiveThinkingModel(model)) {
+      options.thinking = { type: 'adaptive' };
+      options.effort = settings.effortLevel;
+    } else {
+      const budgetConfig = THINKING_BUDGETS.find(b => b.value === settings.thinkingBudget);
+      if (budgetConfig && budgetConfig.tokens > 0) {
+        options.maxThinkingTokens = budgetConfig.tokens;
+      }
     }
   }
 

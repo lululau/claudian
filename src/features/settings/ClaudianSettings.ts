@@ -3,7 +3,7 @@ import type { App } from 'obsidian';
 import { Notice, PluginSettingTab, Setting } from 'obsidian';
 
 import { getCurrentPlatformKey, getHostnameKey } from '../../core/types';
-import { DEFAULT_CLAUDE_MODELS } from '../../core/types/models';
+import { DEFAULT_CLAUDE_MODELS, filterVisibleModelOptions } from '../../core/types/models';
 import { getAvailableLocales, getLocaleDisplayName, setLocale, t } from '../../i18n';
 import type { Locale, TranslationKey } from '../../i18n/types';
 import type ClaudianPlugin from '../../main';
@@ -81,6 +81,10 @@ export class ClaudianSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: ClaudianPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  private normalizeModelVariantSettings(): void {
+    this.plugin.normalizeModelVariantSettings();
   }
 
   display(): void {
@@ -214,7 +218,11 @@ export class ClaudianSettingTab extends PluginSettingTab {
           // Get available models from environment or defaults
           const envVars = parseEnvironmentVariables(this.plugin.settings.environmentVariables);
           const customModels = getModelsFromEnvironment(envVars);
-          const models = customModels.length > 0 ? customModels : DEFAULT_CLAUDE_MODELS;
+          const models = filterVisibleModelOptions(
+            customModels.length > 0 ? customModels : [...DEFAULT_CLAUDE_MODELS],
+            this.plugin.settings.enableOpus1M,
+            this.plugin.settings.enableSonnet1M
+          );
 
           for (const model of models) {
             dropdown.addOption(model.value, model.label);
@@ -418,6 +426,20 @@ export class ClaudianSettingTab extends PluginSettingTab {
           })
       );
 
+    new Setting(containerEl)
+      .setName(t('settings.allowExternalAccess.name'))
+      .setDesc(t('settings.allowExternalAccess.desc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.allowExternalAccess)
+          .onChange(async (value) => {
+            this.plugin.settings.allowExternalAccess = value;
+            await this.plugin.saveSettings();
+            this.display();
+            await this.restartServiceForPromptChange();
+          })
+      );
+
     const platformKey = getCurrentPlatformKey();
     const isWindows = platformKey === 'windows';
     const platformLabel = isWindows ? 'Windows' : 'Unix';
@@ -466,7 +488,11 @@ export class ClaudianSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t('settings.exportPaths.name'))
-      .setDesc(t('settings.exportPaths.desc'))
+      .setDesc(
+        this.plugin.settings.allowExternalAccess
+          ? t('settings.exportPaths.disabledDesc')
+          : t('settings.exportPaths.desc')
+      )
       .addTextArea((text) => {
         const placeholder = process.platform === 'win32'
           ? '~/Desktop\n~/Downloads\n%TEMP%'
@@ -474,6 +500,7 @@ export class ClaudianSettingTab extends PluginSettingTab {
         text
           .setPlaceholder(placeholder)
           .setValue(this.plugin.settings.allowedExportPaths.join('\n'))
+          .setDisabled(this.plugin.settings.allowExternalAccess)
           .onChange(async (value) => {
             this.plugin.settings.allowedExportPaths = value
               .split(/\r?\n/)
@@ -515,17 +542,36 @@ export class ClaudianSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName(t('settings.advanced')).setHeading();
 
     new Setting(containerEl)
-      .setName(t('settings.show1MModel.name'))
-      .setDesc(t('settings.show1MModel.desc'))
+      .setName(t('settings.enableOpus1M.name'))
+      .setDesc(t('settings.enableOpus1M.desc'))
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.show1MModel ?? false)
+          .setValue(this.plugin.settings.enableOpus1M ?? false)
           .onChange(async (value) => {
-            this.plugin.settings.show1MModel = value;
+            this.plugin.settings.enableOpus1M = value;
+            this.normalizeModelVariantSettings();
             await this.plugin.saveSettings();
+            for (const view of this.plugin.getAllViews()) {
+              view.refreshModelSelector();
+            }
+            this.display();
+          })
+      );
 
-            const view = this.plugin.app.workspace.getLeavesOfType('claudian-view')[0]?.view as ClaudianView | undefined;
-            view?.refreshModelSelector();
+    new Setting(containerEl)
+      .setName(t('settings.enableSonnet1M.name'))
+      .setDesc(t('settings.enableSonnet1M.desc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableSonnet1M ?? false)
+          .onChange(async (value) => {
+            this.plugin.settings.enableSonnet1M = value;
+            this.normalizeModelVariantSettings();
+            await this.plugin.saveSettings();
+            for (const view of this.plugin.getAllViews()) {
+              view.refreshModelSelector();
+            }
+            this.display();
           })
       );
 

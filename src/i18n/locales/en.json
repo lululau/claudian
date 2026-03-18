@@ -158,7 +158,8 @@
       "refreshFailed": "Failed to refresh subagents: {message}",
       "deleteFailed": "Failed to delete subagent: {message}",
       "renameCleanupFailed": "Warning: could not remove old file for \"{name}\"",
-      "saved": "Subagent \"{name}\" {action}",
+      "created": "Subagent \"{name}\" created",
+      "updated": "Subagent \"{name}\" updated",
       "deleted": "Subagent \"{name}\" deleted",
       "duplicateName": "An agent named \"{name}\" already exists",
       "descriptionRequired": "Description is required",
@@ -195,6 +196,10 @@
       "name": "Enable command blocklist",
       "desc": "Block potentially dangerous bash commands"
     },
+    "allowExternalAccess": {
+      "name": "Allow external access",
+      "desc": "Allow file and command access outside the vault directory. Takes effect immediately for all active sessions. Disabling vault restriction may expose sensitive files to prompt injection."
+    },
     "blockedCommands": {
       "name": "Blocked commands ({platform})",
       "desc": "Patterns to block on {platform} (one per line). Supports regex.",
@@ -203,7 +208,8 @@
     },
     "exportPaths": {
       "name": "Allowed export paths",
-      "desc": "Paths outside the vault where files can be exported (one per line). Supports ~ for home directory."
+      "desc": "Write-only destinations outside the vault when external access is off (one per line). Supports ~ for home directory.",
+      "disabledDesc": "Ignored while external access is enabled. Turn off external access to enforce write-only export paths."
     },
     "environment": "Environment",
     "customVariables": {
@@ -235,9 +241,13 @@
       "invalid": "Invalid format. Use: 256k, 1m, or exact count (1000-10000000)."
     },
     "advanced": "Advanced",
-    "show1MModel": {
-      "name": "Enable Sonnet with 1M context window",
-      "desc": "Replace standard Sonnet with Sonnet (1M) in the model selector. Same pricing under 200k tokens. Requires Max subscription."
+    "enableOpus1M": {
+      "name": "Opus 1M context window",
+      "desc": "Show Opus 1M in the model selector. Included with Max, Team, and Enterprise plans. API and Pro users need extra usage."
+    },
+    "enableSonnet1M": {
+      "name": "Sonnet 1M context window",
+      "desc": "Show Sonnet 1M in the model selector. Requires extra usage on Max, Team, and Enterprise plans. API and Pro users need extra usage."
     },
     "enableChrome": {
       "name": "Enable Chrome extension",

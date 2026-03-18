@@ -9,21 +9,23 @@ import type {
   ToolCallInfo
 } from '@/core/types';
 import {
-  BETA_1M_CONTEXT,
   CONTEXT_WINDOW_1M,
   CONTEXT_WINDOW_STANDARD,
   createPermissionRule,
+  DEFAULT_CLAUDE_MODELS,
   DEFAULT_SETTINGS,
+  filterVisibleModelOptions,
   getBashToolBlockedCommands,
   getCliPlatformKey,
   getContextWindowSize,
   getCurrentPlatformBlockedCommands,
   getCurrentPlatformKey,
   getDefaultBlockedCommands,
+  isAdaptiveThinkingModel,
   legacyPermissionsToCCPermissions,
   legacyPermissionToCCRule,
+  normalizeVisibleModelVariant,
   parseCCPermissionRule,
-  resolveModelWithBetas,
   VIEW_TYPE_CLAUDIAN
 } from '@/core/types';
 
@@ -37,6 +39,10 @@ describe('types.ts', () => {
   describe('DEFAULT_SETTINGS', () => {
     it('should have enableBlocklist set to true by default', () => {
       expect(DEFAULT_SETTINGS.enableBlocklist).toBe(true);
+    });
+
+    it('should have allowExternalAccess set to false by default', () => {
+      expect(DEFAULT_SETTINGS.allowExternalAccess).toBe(false);
     });
 
     it('should have default blocked commands as platform-keyed object', () => {
@@ -94,6 +100,7 @@ describe('types.ts', () => {
       const settings: ClaudianSettings = {
         userName: '',
         enableBlocklist: false,
+        allowExternalAccess: false,
         blockedCommands: { unix: ['test'], windows: ['test-win'] },
         model: 'haiku',
         enableAutoTitleGeneration: true,
@@ -115,13 +122,15 @@ describe('types.ts', () => {
         claudeCliPathsByHost: {},
         loadUserClaudeSettings: false,
         maxTabs: 3,
-        show1MModel: false,
         enableChrome: false,
         enableBangBash: false,
+        enableOpus1M: false,
+        enableSonnet1M: false,
         tabBarPosition: 'input',
         enableAutoScroll: true,
         openInMainTab: false,
         hiddenSlashCommands: [],
+        effortLevel: 'high',
       };
 
       expect(settings.enableBlocklist).toBe(false);
@@ -133,6 +142,7 @@ describe('types.ts', () => {
       const settings: ClaudianSettings = {
         userName: '',
         enableBlocklist: true,
+        allowExternalAccess: false,
         blockedCommands: { unix: [], windows: [] },
         model: 'anthropic/custom-model-v1',
         enableAutoTitleGeneration: true,
@@ -154,13 +164,15 @@ describe('types.ts', () => {
         claudeCliPathsByHost: {},
         loadUserClaudeSettings: false,
         maxTabs: 3,
-        show1MModel: false,
         enableChrome: false,
         enableBangBash: false,
+        enableOpus1M: false,
+        enableSonnet1M: false,
         tabBarPosition: 'input',
         enableAutoScroll: true,
         openInMainTab: false,
         hiddenSlashCommands: [],
+        effortLevel: 'high',
       };
 
       expect(settings.model).toBe('anthropic/custom-model-v1');
@@ -170,6 +182,7 @@ describe('types.ts', () => {
       const settings: ClaudianSettings = {
         userName: '',
         enableBlocklist: true,
+        allowExternalAccess: false,
         blockedCommands: { unix: [], windows: [] },
         model: 'sonnet',
         enableAutoTitleGeneration: true,
@@ -193,13 +206,15 @@ describe('types.ts', () => {
         claudeCliPathsByHost: {},
         loadUserClaudeSettings: false,
         maxTabs: 5,
-        show1MModel: true,
         enableChrome: false,
         enableBangBash: false,
+        enableOpus1M: false,
+        enableSonnet1M: false,
         tabBarPosition: 'header',
         enableAutoScroll: false,
         openInMainTab: false,
         hiddenSlashCommands: [],
+        effortLevel: 'high',
       };
 
       expect(settings.lastClaudeModel).toBe('opus');
@@ -731,132 +746,159 @@ describe('types.ts', () => {
     });
   });
 
-  describe('1M Model Utilities', () => {
-    describe('resolveModelWithBetas', () => {
-      it('should return model with betas when include1MBeta is true', () => {
-        const result = resolveModelWithBetas('sonnet', true);
-        expect(result.model).toBe('sonnet');
-        expect(result.betas).toBeDefined();
-        expect(result.betas).toContain(BETA_1M_CONTEXT);
-      });
-
-      it('should return model without betas when include1MBeta is false', () => {
-        const result = resolveModelWithBetas('sonnet', false);
-        expect(result.model).toBe('sonnet');
-        expect(result.betas).toBeUndefined();
-      });
-
-      it('should return model without betas by default', () => {
-        const result = resolveModelWithBetas('sonnet');
-        expect(result.model).toBe('sonnet');
-        expect(result.betas).toBeUndefined();
-      });
-
-      it('should preserve model name', () => {
-        expect(resolveModelWithBetas('claude-sonnet-4-5', true).model).toBe('claude-sonnet-4-5');
-        expect(resolveModelWithBetas('claude-opus-4-5', false).model).toBe('claude-opus-4-5');
-      });
-
-      it('should return single beta flag in array', () => {
-        const result = resolveModelWithBetas('sonnet', true);
-        expect(result.betas).toHaveLength(1);
-      });
-
-      it('should throw when model is empty string', () => {
-        expect(() => resolveModelWithBetas('')).toThrow('model is required');
-        expect(() => resolveModelWithBetas('', true)).toThrow('model is required');
-      });
-
-      it('should throw when model is not provided correctly', () => {
-        // @ts-expect-error - testing runtime validation
-        expect(() => resolveModelWithBetas(null)).toThrow('model is required');
-        // @ts-expect-error - testing runtime validation
-        expect(() => resolveModelWithBetas(undefined)).toThrow('model is required');
-      });
+  describe('getContextWindowSize', () => {
+    it('should return standard context window by default', () => {
+      expect(getContextWindowSize('sonnet')).toBe(CONTEXT_WINDOW_STANDARD);
+      expect(getContextWindowSize('opus')).toBe(CONTEXT_WINDOW_STANDARD);
+      expect(getContextWindowSize('haiku')).toBe(CONTEXT_WINDOW_STANDARD);
     });
 
-    describe('BETA_1M_CONTEXT', () => {
-      it('should be defined as the correct beta flag', () => {
-        expect(BETA_1M_CONTEXT).toBe('context-1m-2025-08-07');
-      });
+    it('should use custom limits when provided', () => {
+      const customLimits = { 'custom-model': 256000 };
+      expect(getContextWindowSize('custom-model', customLimits)).toBe(256000);
     });
 
-    describe('getContextWindowSize', () => {
-      it('should return standard context window by default', () => {
-        expect(getContextWindowSize('sonnet')).toBe(CONTEXT_WINDOW_STANDARD);
-        expect(getContextWindowSize('opus')).toBe(CONTEXT_WINDOW_STANDARD);
-        expect(getContextWindowSize('haiku')).toBe(CONTEXT_WINDOW_STANDARD);
+    it('should fall back to default when model not in custom limits', () => {
+      const customLimits = { 'other-model': 256000 };
+      expect(getContextWindowSize('sonnet', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
+    });
+
+    it('should handle empty custom limits object', () => {
+      expect(getContextWindowSize('sonnet', {})).toBe(CONTEXT_WINDOW_STANDARD);
+    });
+
+    it('should handle undefined custom limits', () => {
+      expect(getContextWindowSize('sonnet', undefined)).toBe(CONTEXT_WINDOW_STANDARD);
+    });
+
+    describe('defensive validation for invalid custom limit values', () => {
+      it('should fall back to default for NaN custom limit', () => {
+        const customLimits = { 'custom-model': NaN };
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
       });
 
-      it('should return 1M context window for sonnet when enabled', () => {
-        expect(getContextWindowSize('sonnet', true)).toBe(CONTEXT_WINDOW_1M);
-        expect(getContextWindowSize('claude-sonnet-4-5', true)).toBe(CONTEXT_WINDOW_1M);
+      it('should fall back to default for negative custom limit', () => {
+        const customLimits = { 'custom-model': -100000 };
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
       });
 
-      it('should return standard context for non-sonnet models even with 1M enabled', () => {
-        expect(getContextWindowSize('opus', true)).toBe(CONTEXT_WINDOW_STANDARD);
-        expect(getContextWindowSize('haiku', true)).toBe(CONTEXT_WINDOW_STANDARD);
+      it('should fall back to default for zero custom limit', () => {
+        const customLimits = { 'custom-model': 0 };
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
       });
 
-      it('should use custom limits when provided', () => {
+      it('should fall back to default for Infinity custom limit', () => {
+        const customLimits = { 'custom-model': Infinity };
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
+      });
+
+      it('should fall back to default for -Infinity custom limit', () => {
+        const customLimits = { 'custom-model': -Infinity };
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
+      });
+
+      it('should accept valid positive custom limit', () => {
         const customLimits = { 'custom-model': 256000 };
-        expect(getContextWindowSize('custom-model', false, customLimits)).toBe(256000);
+        expect(getContextWindowSize('custom-model', customLimits)).toBe(256000);
+      });
+    });
+
+    describe('[1m] suffix detection', () => {
+      it('should return 1M context window for models with [1m] suffix', () => {
+        expect(getContextWindowSize('opus[1m]')).toBe(CONTEXT_WINDOW_1M);
+        expect(getContextWindowSize('sonnet[1m]')).toBe(CONTEXT_WINDOW_1M);
       });
 
-      it('should prioritize custom limits over 1M setting', () => {
-        const customLimits = { 'custom-sonnet': 500000 };
-        expect(getContextWindowSize('custom-sonnet', true, customLimits)).toBe(500000);
+      it('should return 1M for full model IDs with [1m] suffix', () => {
+        expect(getContextWindowSize('claude-opus-4-6[1m]')).toBe(CONTEXT_WINDOW_1M);
+        expect(getContextWindowSize('claude-sonnet-4-6[1m]')).toBe(CONTEXT_WINDOW_1M);
       });
 
-      it('should fall back to default when model not in custom limits', () => {
-        const customLimits = { 'other-model': 256000 };
-        expect(getContextWindowSize('sonnet', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
+      it('should prefer custom limits over [1m] suffix', () => {
+        const customLimits = { 'opus[1m]': 500000 };
+        expect(getContextWindowSize('opus[1m]', customLimits)).toBe(500000);
       });
 
-      it('should handle empty custom limits object', () => {
-        expect(getContextWindowSize('sonnet', false, {})).toBe(CONTEXT_WINDOW_STANDARD);
+      it('should return standard for models without [1m] suffix', () => {
+        expect(getContextWindowSize('opus')).toBe(CONTEXT_WINDOW_STANDARD);
+        expect(getContextWindowSize('sonnet')).toBe(CONTEXT_WINDOW_STANDARD);
+      });
+    });
+
+    describe('filterVisibleModelOptions', () => {
+      it('should hide 1M variants when toggles are disabled', () => {
+        const models = filterVisibleModelOptions(DEFAULT_CLAUDE_MODELS, false, false).map((model) => model.value);
+        expect(models).toEqual(['haiku', 'sonnet', 'opus']);
       });
 
-      it('should handle undefined custom limits', () => {
-        expect(getContextWindowSize('sonnet', false, undefined)).toBe(CONTEXT_WINDOW_STANDARD);
+      it('should swap in 1M variants when toggles are enabled', () => {
+        const models = filterVisibleModelOptions(DEFAULT_CLAUDE_MODELS, true, true).map((model) => model.value);
+        expect(models).toEqual(['haiku', 'sonnet[1m]', 'opus[1m]']);
       });
 
-      describe('defensive validation for invalid custom limit values', () => {
-        it('should fall back to default for NaN custom limit', () => {
-          const customLimits = { 'custom-model': NaN };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
-        });
-
-        it('should fall back to default for negative custom limit', () => {
-          const customLimits = { 'custom-model': -100000 };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
-        });
-
-        it('should fall back to default for zero custom limit', () => {
-          const customLimits = { 'custom-model': 0 };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
-        });
-
-        it('should fall back to default for Infinity custom limit', () => {
-          const customLimits = { 'custom-model': Infinity };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
-        });
-
-        it('should fall back to default for -Infinity custom limit', () => {
-          const customLimits = { 'custom-model': -Infinity };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(CONTEXT_WINDOW_STANDARD);
-        });
-
-        it('should fall back to 1M for invalid sonnet custom limit when 1M enabled', () => {
-          const customLimits = { 'sonnet': NaN };
-          expect(getContextWindowSize('sonnet', true, customLimits)).toBe(CONTEXT_WINDOW_1M);
-        });
-
-        it('should accept valid positive custom limit', () => {
-          const customLimits = { 'custom-model': 256000 };
-          expect(getContextWindowSize('custom-model', false, customLimits)).toBe(256000);
-        });
+      it('should swap only opus when enableOpus1M is true and enableSonnet1M is false', () => {
+        const models = filterVisibleModelOptions(DEFAULT_CLAUDE_MODELS, true, false).map((model) => model.value);
+        expect(models).toEqual(['haiku', 'sonnet', 'opus[1m]']);
       });
+
+      it('should swap only sonnet when enableSonnet1M is true and enableOpus1M is false', () => {
+        const models = filterVisibleModelOptions(DEFAULT_CLAUDE_MODELS, false, true).map((model) => model.value);
+        expect(models).toEqual(['haiku', 'sonnet[1m]', 'opus']);
+      });
+    });
+
+    describe('normalizeVisibleModelVariant', () => {
+      it('should normalize built-in variants to the visible option', () => {
+        expect(normalizeVisibleModelVariant('sonnet', true, true)).toBe('sonnet[1m]');
+        expect(normalizeVisibleModelVariant('sonnet[1m]', false, false)).toBe('sonnet');
+        expect(normalizeVisibleModelVariant('opus', true, false)).toBe('opus[1m]');
+        expect(normalizeVisibleModelVariant('opus[1m]', false, true)).toBe('opus');
+      });
+
+      it('should leave unrelated model ids unchanged', () => {
+        expect(normalizeVisibleModelVariant('', true, true)).toBe('');
+        expect(normalizeVisibleModelVariant('haiku', true, true)).toBe('haiku');
+        expect(normalizeVisibleModelVariant('custom-model', true, true)).toBe('custom-model');
+      });
+    });
+  });
+
+  describe('isAdaptiveThinkingModel', () => {
+    it('should return true for default model aliases', () => {
+      expect(isAdaptiveThinkingModel('haiku')).toBe(true);
+      expect(isAdaptiveThinkingModel('sonnet')).toBe(true);
+      expect(isAdaptiveThinkingModel('sonnet[1m]')).toBe(true);
+      expect(isAdaptiveThinkingModel('opus')).toBe(true);
+      expect(isAdaptiveThinkingModel('opus[1m]')).toBe(true);
+    });
+
+    it('should return true for full Claude model IDs', () => {
+      expect(isAdaptiveThinkingModel('claude-sonnet-4-6-20250514')).toBe(true);
+      expect(isAdaptiveThinkingModel('claude-opus-4-6-20250514')).toBe(true);
+      expect(isAdaptiveThinkingModel('claude-haiku-4-5-20251001')).toBe(true);
+    });
+
+    it('should return false for custom/unknown models', () => {
+      expect(isAdaptiveThinkingModel('custom-model')).toBe(false);
+      expect(isAdaptiveThinkingModel('gpt-4')).toBe(false);
+      expect(isAdaptiveThinkingModel('')).toBe(false);
+    });
+
+    it('should return true for provider-qualified Claude model IDs', () => {
+      expect(isAdaptiveThinkingModel('us.anthropic.claude-sonnet-4-20250514-v1:0')).toBe(true);
+      expect(isAdaptiveThinkingModel('anthropic/claude-opus-4-6')).toBe(true);
+      expect(isAdaptiveThinkingModel('eu.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe(true);
+    });
+
+    it('should return false for partial model IDs without version suffix', () => {
+      expect(isAdaptiveThinkingModel('claude-haiku')).toBe(false);
+      expect(isAdaptiveThinkingModel('claude-sonnet')).toBe(false);
+      expect(isAdaptiveThinkingModel('claude-opus')).toBe(false);
+    });
+
+    it('should return true for full versioned 1M model IDs', () => {
+      expect(isAdaptiveThinkingModel('claude-opus-4-6[1m]')).toBe(true);
+      expect(isAdaptiveThinkingModel('claude-sonnet-4-6[1m]')).toBe(true);
     });
   });
 });

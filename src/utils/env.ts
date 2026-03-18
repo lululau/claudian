@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { parsePathEntries } from './path';
+import { parsePathEntries, resolveNvmDefaultBin } from './path';
 
 const isWindows = process.platform === 'win32';
 const PATH_SEPARATOR = isWindows ? ';' : ':';
@@ -17,6 +17,27 @@ const NODE_EXECUTABLE = isWindows ? 'node.exe' : 'node';
 
 function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || '';
+}
+
+/**
+ * Linux is excluded because Obsidian registers the CLI through stable symlinks
+ * like /usr/local/bin or ~/.local/bin, while process.execPath may point to a
+ * transient AppImage mount that changes on every launch.
+ */
+function getAppProvidedCliPaths(): string[] {
+  if (process.platform === 'darwin') {
+    const appBundleMatch = process.execPath.match(/^(.+?\.app)\//);
+    if (appBundleMatch) {
+      return [path.join(appBundleMatch[1], 'Contents', 'MacOS')];
+    }
+    return [path.dirname(process.execPath)];
+  }
+
+  if (process.platform === 'win32') {
+    return [path.dirname(process.execPath)];
+  }
+
+  return [];
 }
 
 /** GUI apps like Obsidian have minimal PATH, so we add common binary locations. */
@@ -108,6 +129,8 @@ function getExtraBinaryPaths(): string[] {
       paths.push(path.join(home, '.local', 'bin'));
     }
 
+    paths.push(...getAppProvidedCliPaths());
+
     return paths;
   } else {
     // Unix paths
@@ -147,12 +170,19 @@ function getExtraBinaryPaths(): string[] {
       paths.push(path.join(home, '.asdf', 'bin'));
       paths.push(path.join(home, '.fnm'));
 
-      // NVM: use NVM_BIN if set, otherwise skip (NVM_BIN points to actual bin)
+      // NVM: use NVM_BIN if set, otherwise resolve default version from filesystem
       const nvmBin = process.env.NVM_BIN;
       if (nvmBin) {
         paths.push(nvmBin);
+      } else {
+        const nvmDefault = resolveNvmDefaultBin(home);
+        if (nvmDefault) {
+          paths.push(nvmDefault);
+        }
       }
     }
+
+    paths.push(...getAppProvidedCliPaths());
 
     return paths;
   }

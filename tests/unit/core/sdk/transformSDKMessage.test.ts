@@ -356,6 +356,31 @@ describe('transformSDKMessage', () => {
       expect((results[0] as any).content).toContain('"status": "success"');
     });
 
+    it('extracts text from array-based tool_use_result content', () => {
+      const toolUseResult = [
+        { type: 'text', text: 'Agent completed successfully.' },
+        { type: 'text', text: 'Saved summary to notes.md' },
+      ];
+      const message = msg({
+        type: 'user',
+        parent_tool_use_id: 'tool-123',
+        tool_use_result: toolUseResult,
+      });
+
+      const results = [...transformSDKMessage(message)];
+
+      expect(results).toEqual([
+        {
+          type: 'tool_result',
+          id: 'tool-123',
+          content: 'Agent completed successfully.\nSaved summary to notes.md',
+          isError: false,
+          parentToolUseId: 'tool-123',
+          toolUseResult,
+        },
+      ]);
+    });
+
     it('yields tool_result from message.content blocks', () => {
       const message = msg({
         type: 'user',
@@ -412,7 +437,37 @@ describe('transformSDKMessage', () => {
       ]);
     });
 
-    it('stringifies non-string content in tool_result blocks', () => {
+    it('extracts text from array content in tool_result blocks', () => {
+      const message = msg({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-agent',
+              content: [
+                { type: 'text', text: 'Agent completed successfully.' },
+                { type: 'text', text: 'Next step queued.' },
+              ],
+            },
+          ],
+        },
+      });
+
+      const results = [...transformSDKMessage(message)];
+
+      expect(results).toEqual([
+        {
+          type: 'tool_result',
+          id: 'tool-agent',
+          content: 'Agent completed successfully.\nNext step queued.',
+          isError: false,
+          parentToolUseId: null,
+        },
+      ]);
+    });
+
+    it('stringifies non-string object content in tool_result blocks', () => {
       const message = msg({
         type: 'user',
         message: {
@@ -430,6 +485,30 @@ describe('transformSDKMessage', () => {
 
       expect(results.length).toBe(1);
       expect((results[0] as any).content).toContain('"key": "value"');
+    });
+
+    it('preserves tool_reference array content in tool_result blocks', () => {
+      const toolRefs = [
+        { type: 'tool_reference', tool_name: 'WebSearch' },
+        { type: 'tool_reference', tool_name: 'Grep' },
+      ];
+      const message = msg({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-search-1',
+              content: toolRefs,
+            },
+          ],
+        },
+      });
+
+      const results = [...transformSDKMessage(message)];
+
+      expect(results.length).toBe(1);
+      expect((results[0] as any).content).toBe(JSON.stringify(toolRefs, null, 2));
     });
 
     it('uses parent_tool_use_id as fallback for tool_result id', () => {
@@ -682,7 +761,7 @@ describe('transformSDKMessage', () => {
   });
 
   describe('result messages', () => {
-    it('yields nothing for successful result messages (usage extracted from assistant messages now)', () => {
+    it('yields context_window_update for successful result messages with modelUsage', () => {
       const message = msg({
         type: 'result',
         modelUsage: {
@@ -701,10 +780,12 @@ describe('transformSDKMessage', () => {
 
       const results = [...transformSDKMessage(message)];
 
-      expect(results).toEqual([]);
+      expect(results).toEqual([
+        { type: 'context_window_update', contextWindow: 200000 },
+      ]);
     });
 
-    it('yields error for failed result messages', () => {
+    it('yields error and context_window_update for failed result messages', () => {
       const message = msg({
         type: 'result',
         subtype: 'error_max_turns',
@@ -715,7 +796,132 @@ describe('transformSDKMessage', () => {
 
       expect(results).toEqual([
         { type: 'error', content: 'Hit maximum turn limit' },
+        { type: 'context_window_update', contextWindow: 200000 },
       ]);
+    });
+
+    it('yields context_window_update with 1M for [1m] models', () => {
+      const message = msg({
+        type: 'result',
+        modelUsage: {
+          'claude-opus-4-6[1m]': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 1000000,
+            maxOutputTokens: 32000,
+          },
+        },
+      });
+
+      const results = [...transformSDKMessage(message)];
+
+      expect(results).toEqual([
+        { type: 'context_window_update', contextWindow: 1000000 },
+      ]);
+    });
+
+    it('prefers the exact intended model when modelUsage includes multiple entries', () => {
+      const message = msg({
+        type: 'result',
+        modelUsage: {
+          'custom-subagent-model': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 1000000,
+            maxOutputTokens: 32000,
+          },
+          'custom-main-model': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 200000,
+            maxOutputTokens: 32000,
+          },
+        },
+      });
+
+      const results = [...transformSDKMessage(message, { intendedModel: 'custom-main-model' })];
+
+      expect(results).toEqual([
+        { type: 'context_window_update', contextWindow: 200000 },
+      ]);
+    });
+
+    it('matches built-in aliases against SDK modelUsage keys when unambiguous', () => {
+      const message = msg({
+        type: 'result',
+        modelUsage: {
+          'claude-sonnet-4-5-20250514': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 200000,
+            maxOutputTokens: 32000,
+          },
+          'claude-opus-4-6[1m]': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 1000000,
+            maxOutputTokens: 32000,
+          },
+        },
+      });
+
+      const results = [...transformSDKMessage(message, { intendedModel: 'opus[1m]' })];
+
+      expect(results).toEqual([
+        { type: 'context_window_update', contextWindow: 1000000 },
+      ]);
+    });
+
+    it('does not override the heuristic when multi-model result usage is ambiguous', () => {
+      const message = msg({
+        type: 'result',
+        modelUsage: {
+          'claude-sonnet-4-5-20250514': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 200000,
+            maxOutputTokens: 32000,
+          },
+          'claude-sonnet-4-6-20260101': {
+            inputTokens: 1000,
+            outputTokens: 300,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 500000,
+            maxOutputTokens: 32000,
+          },
+        },
+      });
+
+      const results = [...transformSDKMessage(message, { intendedModel: 'sonnet' })];
+
+      expect(results).toEqual([]);
     });
   });
 
@@ -770,31 +976,6 @@ describe('transformSDKMessage', () => {
       expect(usageResults).toHaveLength(0);
     });
 
-    it('uses 1M context window when is1MEnabled is true for sonnet', () => {
-      const message = msg({
-        type: 'assistant',
-        parent_tool_use_id: null,
-        message: {
-          content: [{ type: 'text', text: 'Hello' }],
-          usage: {
-            input_tokens: 50000,
-            output_tokens: 10000,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-          },
-        },
-      });
-
-      const results = [...transformSDKMessage(message, { intendedModel: 'sonnet', is1MEnabled: true })];
-
-      const usageResults = results.filter(r => r.type === 'usage');
-      expect(usageResults).toHaveLength(1);
-
-      const usage = (usageResults[0] as any).usage;
-      expect(usage.contextWindow).toBe(1000000); // 1M context window
-      expect(usage.percentage).toBe(5); // 50000 / 1000000 * 100 = 5%
-    });
-
     it('uses custom context limits when provided', () => {
       const message = msg({
         type: 'assistant',
@@ -823,7 +1004,7 @@ describe('transformSDKMessage', () => {
       expect(usage.percentage).toBe(10); // 50000 / 500000 * 100 = 10%
     });
 
-    it('prioritizes custom context limits over 1M setting', () => {
+    it('uses custom context limits over standard window', () => {
       const message = msg({
         type: 'assistant',
         parent_tool_use_id: null,
@@ -840,7 +1021,6 @@ describe('transformSDKMessage', () => {
 
       const results = [...transformSDKMessage(message, {
         intendedModel: 'sonnet',
-        is1MEnabled: true,
         customContextLimits: { 'sonnet': 256000 },
       })];
 
@@ -848,7 +1028,7 @@ describe('transformSDKMessage', () => {
       expect(usageResults).toHaveLength(1);
 
       const usage = (usageResults[0] as any).usage;
-      expect(usage.contextWindow).toBe(256000); // Custom limit takes precedence over 1M
+      expect(usage.contextWindow).toBe(256000); // Custom limit takes precedence
       expect(usage.percentage).toBe(39); // 100000 / 256000 * 100 ≈ 39%
     });
 

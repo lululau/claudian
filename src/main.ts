@@ -12,7 +12,7 @@ import { AgentManager } from './core/agents';
 import { McpServerManager } from './core/mcp';
 import { PluginManager } from './core/plugins';
 import { StorageService } from './core/storage';
-import { TOOL_TASK } from './core/tools/toolNames';
+import { isSubagentToolName, TOOL_TASK } from './core/tools/toolNames';
 import type {
   ChatMessage,
   ClaudianSettings,
@@ -26,6 +26,7 @@ import {
   DEFAULT_SETTINGS,
   getCliPlatformKey,
   getHostnameKey,
+  normalizeVisibleModelVariant,
   VIEW_TYPE_CLAUDIAN,
 } from './core/types';
 import { ClaudianView } from './features/chat/ClaudianView';
@@ -252,6 +253,8 @@ export default class ClaudianPlugin extends Plugin {
       this.settings.permissionMode = 'normal';
     }
 
+    const didNormalizeModelVariants = this.normalizeModelVariantSettings();
+
     // Initialize and migrate legacy CLI paths to hostname-based paths
     this.settings.claudeCliPathsByHost ??= {};
     const hostname = getHostnameKey();
@@ -353,7 +356,7 @@ export default class ClaudianPlugin extends Plugin {
     this.runtimeEnvironmentVariables = this.settings.environmentVariables || '';
     const { changed, invalidatedConversations } = this.reconcileModelWithEnvironment(this.runtimeEnvironmentVariables);
 
-    if (changed || didMigrateCliPath) {
+    if (changed || didMigrateCliPath || didNormalizeModelVariants) {
       await this.saveSettings();
     }
 
@@ -388,6 +391,36 @@ export default class ClaudianPlugin extends Plugin {
       }
     }
     return updated;
+  }
+
+  normalizeModelVariantSettings(): boolean {
+    const { enableOpus1M, enableSonnet1M } = this.settings;
+    let changed = false;
+
+    const normalize = (model: string): string =>
+      normalizeVisibleModelVariant(model, enableOpus1M, enableSonnet1M);
+
+    const normalizedModel = normalize(this.settings.model);
+    if (this.settings.model !== normalizedModel) {
+      this.settings.model = normalizedModel;
+      changed = true;
+    }
+
+    const normalizedTitleModel = normalize(this.settings.titleGenerationModel);
+    if (this.settings.titleGenerationModel !== normalizedTitleModel) {
+      this.settings.titleGenerationModel = normalizedTitleModel;
+      changed = true;
+    }
+
+    if (this.settings.lastClaudeModel) {
+      const normalizedLastClaudeModel = normalize(this.settings.lastClaudeModel);
+      if (this.settings.lastClaudeModel !== normalizedLastClaudeModel) {
+        this.settings.lastClaudeModel = normalizedLastClaudeModel;
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   /** Persists settings to storage. */
@@ -674,7 +707,7 @@ export default class ClaudianPlugin extends Plugin {
       ...afterCutoff,
     ]).sort((a, b) => a.timestamp - b.timestamp);
 
-    // Apply cached subagentData to loaded messages (for Task tool count and status)
+    // Apply cached subagentData to loaded messages (for Agent tool count and status)
     if (conversation.subagentData) {
       await this.enrichAsyncSubagentToolCalls(
         conversation.subagentData,
@@ -726,8 +759,8 @@ export default class ClaudianPlugin extends Plugin {
 
   /**
    * Applies cached subagentData to messages.
-   * Restores subagent info so Task tools can show tool count and status.
-   * Also updates contentBlocks to properly identify Task tools as subagents.
+   * Restores subagent info so Agent tools can show tool count and status.
+   * Also updates contentBlocks to properly identify Agent tools as subagents.
    */
   private applySubagentData(messages: ChatMessage[], subagentData: Record<string, SubagentInfo>): void {
     const attachedSubagentIds = new Set<string>();
@@ -749,7 +782,7 @@ export default class ClaudianPlugin extends Plugin {
     ) => {
       msg.toolCalls = msg.toolCalls || [];
       let taskToolCall = msg.toolCalls.find(
-        tc => tc.id === subagentId && tc.name === TOOL_TASK
+        tc => tc.id === subagentId && isSubagentToolName(tc.name)
       );
 
       if (!taskToolCall) {

@@ -20,7 +20,7 @@ An Obsidian plugin that embeds Claude Code as an AI collaborator in your vault. 
 - **Custom Agents**: Define custom subagents that Claude can invoke, with support for tool restrictions and model overrides.
 - **Claude Code Plugins**: Enable Claude Code plugins installed via the CLI, with automatic discovery from `~/.claude/plugins` and per-vault configuration. Plugin skills, agents, and slash commands integrate seamlessly.
 - **MCP Support**: Connect external tools and data sources via Model Context Protocol servers (stdio, SSE, HTTP) with context-saving mode and `@`-mention activation.
-- **Advanced Model Control**: Select between Haiku, Sonnet, and Opus, configure custom models via environment variables, fine-tune thinking budget, and enable Sonnet with 1M context window (requires Max subscription).
+- **Advanced Model Control**: Select between Haiku, Sonnet, and Opus, configure custom models via environment variables, fine-tune thinking budget, and enable Opus and Sonnet with 1M context window (requires Max subscription or extra usage).
 - **Plan Mode**: Toggle plan mode via Shift+Tab in the chat input. Claudian explores and designs before implementing, presenting a plan for approval with options to approve in a new session, continue in the current session, or provide feedback.
 - **Security**: Permission modes (YOLO/Safe/Plan), safety blocklist, and vault confinement with symlink-safe checks.
 - **Claude in Chrome**: Allow Claude to interact with Chrome through the `claude-in-chrome` extension.
@@ -254,6 +254,8 @@ src/
 - [x] `rewind` and `fork` support (including `/fork` command)
 - [x] `!command` support
 - [x] Tool renderers refinement
+- [x] 1M Opus and Sonnet models
+- [ ] Codex SDK integration
 - [ ] Hooks and other advanced features
 - [ ] More to come!
 
@@ -263,7 +265,13 @@ Licensed under the [MIT License](LICENSE).
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=YishenTu/claudian&type=date&legend=top-left)](https://www.star-history.com/?type=date&legend=top-left&repos=YishenTu%2Fclaudian)
+<a href="https://www.star-history.com/?repos=YishenTu%2Fclaudian&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=YishenTu/claudian&type=date&legend=top-left&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=YishenTu/claudian&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=YishenTu/claudian&type=date&legend=top-left" />
+  </picture>
+</a>
 
 ## Acknowledgments
 

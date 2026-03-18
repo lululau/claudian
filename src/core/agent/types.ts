@@ -5,7 +5,7 @@
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import type { SystemPromptSettings } from '../prompts/mainAgent';
-import type { ClaudeModel, PermissionMode, StreamChunk } from '../types';
+import type { ClaudeModel, EffortLevel, PermissionMode, StreamChunk } from '../types';
 
 export interface TextContentBlock {
   type: 'text';
@@ -101,6 +101,7 @@ export function createResponseHandler(options: ResponseHandlerOptions): Response
 export interface PersistentQueryConfig {
   model: string | null;
   thinkingTokens: number | null;
+  effortLevel: EffortLevel | null;
   permissionMode: PermissionMode | null;
   systemPromptKey: string;
   disallowedToolsKey: string;
@@ -110,7 +111,6 @@ export interface PersistentQueryConfig {
   allowedExportPaths: string[];
   settingSources: string;
   claudeCliPath: string;
-  show1MModel: boolean;  // Whether 1M beta flag is always included
   enableChrome: boolean;  // Whether --chrome flag is passed to CLI
 }
 
@@ -144,6 +144,7 @@ export function computeSystemPromptKey(settings: SystemPromptSettings): string {
     (settings.allowedExportPaths || []).sort().join('|'),
     settings.vaultPath || '',
     (settings.userName || '').trim(),
+    String(settings.allowExternalAccess ?? false),
     // Note: hasEditorContext is per-message, not tracked here
   ];
   return parts.join('::');
