@@ -1,6 +1,7 @@
 import { setIcon } from 'obsidian';
 
-import { getToolIcon, TOOL_TASK } from '../../../core/tools';
+import { getToolIcon } from '../../../core/tools/toolIcons';
+import { TOOL_TASK } from '../../../core/tools/toolNames';
 import type { SubagentInfo, ToolCallInfo } from '../../../core/types';
 import { setupCollapsible } from './collapsible';
 import {
@@ -98,13 +99,13 @@ function updateSyncHeaderAria(state: SubagentState): void {
 function renderSubagentToolContent(contentEl: HTMLElement, toolCall: ToolCallInfo): void {
   contentEl.empty();
 
-  if (!toolCall.result) {
+  if (!toolCall.result && toolCall.status === 'running') {
     const emptyEl = contentEl.createDiv({ cls: 'claudian-subagent-tool-empty' });
-    emptyEl.setText(toolCall.status === 'running' ? 'Running...' : 'No output recorded');
+    emptyEl.setText('Running...');
     return;
   }
 
-  renderExpandedContent(contentEl, toolCall.name, toolCall.result);
+  renderExpandedContent(contentEl, toolCall.name, toolCall.result, toolCall.input);
 }
 
 function setSubagentToolStatus(view: SubagentToolView, status: ToolCallInfo['status']): void {
@@ -289,6 +290,31 @@ export function addSubagentToolCall(
   state: SubagentState,
   toolCall: ToolCallInfo
 ): void {
+  const existingIndex = state.info.toolCalls.findIndex(tc => tc.id === toolCall.id);
+  if (existingIndex >= 0) {
+    const existingToolCall = state.info.toolCalls[existingIndex]!;
+    const mergedToolCall: ToolCallInfo = {
+      ...existingToolCall,
+      ...toolCall,
+      input: {
+        ...existingToolCall.input,
+        ...toolCall.input,
+      },
+      result: toolCall.result ?? existingToolCall.result,
+      isExpanded: toolCall.isExpanded ?? existingToolCall.isExpanded,
+    };
+
+    state.info.toolCalls[existingIndex] = mergedToolCall;
+
+    const existingView = state.toolElements.get(toolCall.id);
+    if (existingView) {
+      updateSubagentToolView(existingView, mergedToolCall);
+    }
+
+    updateSyncHeaderAria(state);
+    return;
+  }
+
   state.info.toolCalls.push(toolCall);
 
   const toolCount = state.info.toolCalls.length;
@@ -366,7 +392,6 @@ export interface AsyncSubagentState {
   contentEl: HTMLElement;
   headerEl: HTMLElement;
   labelEl: HTMLElement;
-  countEl: HTMLElement;
   statusTextEl: HTMLElement;  // Running / Completed / Error / Orphaned
   statusEl: HTMLElement;
   info: SubagentInfo;
@@ -411,15 +436,10 @@ function getAsyncStatusAriaLabel(asyncStatus: string | undefined): string {
 function updateAsyncLabel(state: AsyncSubagentState): void {
   state.labelEl.setText(truncateDescription(state.info.description));
 
-  const isFinished = state.info.asyncStatus === 'completed' || state.info.asyncStatus === 'error' || state.info.asyncStatus === 'orphaned';
-  const countText = isFinished ? `${state.info.toolCalls.length} tool uses` : '';
-  state.countEl.setText(countText);
-
   const statusLabel = getAsyncStatusAriaLabel(state.info.asyncStatus);
-  const ariaCount = isFinished ? `${state.info.toolCalls.length} tool uses - ` : '';
   state.headerEl.setAttribute(
     'aria-label',
-    `Background task: ${truncateDescription(state.info.description)} - ${ariaCount}${statusLabel} - click to expand`
+    `Background task: ${truncateDescription(state.info.description)} - ${statusLabel} - click to expand`
   );
 }
 
@@ -501,8 +521,6 @@ export function createAsyncSubagentBlock(
   const labelEl = headerEl.createDiv({ cls: 'claudian-subagent-label' });
   labelEl.setText(truncateDescription(description));
 
-  const countEl = headerEl.createDiv({ cls: 'claudian-subagent-count' });
-
   const statusTextEl = headerEl.createDiv({ cls: 'claudian-subagent-status-text' });
   statusTextEl.setText('Initializing');
 
@@ -519,7 +537,6 @@ export function createAsyncSubagentBlock(
     contentEl,
     headerEl,
     labelEl,
-    countEl,
     statusTextEl,
     statusEl,
     info,
@@ -619,11 +636,9 @@ export function renderStoredAsyncSubagent(
   headerEl.setAttribute('tabindex', '0');
   headerEl.setAttribute('role', 'button');
   headerEl.setAttribute('aria-expanded', 'false');
-  const isFinished = displayStatus === 'completed' || displayStatus === 'error' || displayStatus === 'orphaned';
-  const ariaCount = isFinished ? `${subagent.toolCalls.length} tool uses - ` : '';
   headerEl.setAttribute(
     'aria-label',
-    `Background task: ${subagent.description} - ${ariaCount}${statusAriaLabel} - click to expand`
+    `Background task: ${subagent.description} - ${statusAriaLabel} - click to expand`
   );
 
   const iconEl = headerEl.createDiv({ cls: 'claudian-subagent-icon' });
@@ -632,11 +647,6 @@ export function renderStoredAsyncSubagent(
 
   const labelEl = headerEl.createDiv({ cls: 'claudian-subagent-label' });
   labelEl.setText(truncateDescription(subagent.description));
-
-  const countEl = headerEl.createDiv({ cls: 'claudian-subagent-count' });
-  if (isFinished) {
-    countEl.setText(`${subagent.toolCalls.length} tool uses`);
-  }
 
   const statusTextEl = headerEl.createDiv({ cls: 'claudian-subagent-status-text' });
   statusTextEl.setText(statusText);

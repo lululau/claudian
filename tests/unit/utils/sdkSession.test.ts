@@ -2,7 +2,6 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as os from 'os';
 
-import { extractToolResultContent } from '@/core/sdk/toolResultContent';
 import {
   collectAsyncSubagentResults,
   deleteSDKSession,
@@ -16,9 +15,11 @@ import {
   loadSubagentToolCalls,
   parseSDKMessageToChat,
   readSDKSession,
+  resolveToolUseResultStatus,
   type SDKNativeMessage,
   sdkSessionExists,
-} from '@/utils/sdkSession';
+} from '@/providers/claude/history/ClaudeHistoryStore';
+import { extractToolResultContent } from '@/providers/claude/sdk/toolResultContent';
 
 // Mock fs, fs/promises, and os modules
 jest.mock('fs', () => ({
@@ -410,7 +411,7 @@ describe('sdkSession', () => {
       expect(chatMsg!.timestamp).toBe(new Date('2024-01-15T10:30:00Z').getTime());
     });
 
-    it('sets sdkUserUuid on user messages with uuid', () => {
+    it('sets userMessageId on user messages with uuid', () => {
       const sdkMsg: SDKNativeMessage = {
         type: 'user',
         uuid: 'user-rewind-123',
@@ -420,11 +421,11 @@ describe('sdkSession', () => {
 
       const chatMsg = parseSDKMessageToChat(sdkMsg);
 
-      expect(chatMsg!.sdkUserUuid).toBe('user-rewind-123');
-      expect(chatMsg!.sdkAssistantUuid).toBeUndefined();
+      expect(chatMsg!.userMessageId).toBe('user-rewind-123');
+      expect(chatMsg!.assistantMessageId).toBeUndefined();
     });
 
-    it('sets sdkAssistantUuid on assistant messages with uuid', () => {
+    it('sets assistantMessageId on assistant messages with uuid', () => {
       const sdkMsg: SDKNativeMessage = {
         type: 'assistant',
         uuid: 'asst-rewind-456',
@@ -436,8 +437,8 @@ describe('sdkSession', () => {
 
       const chatMsg = parseSDKMessageToChat(sdkMsg);
 
-      expect(chatMsg!.sdkAssistantUuid).toBe('asst-rewind-456');
-      expect(chatMsg!.sdkUserUuid).toBeUndefined();
+      expect(chatMsg!.assistantMessageId).toBe('asst-rewind-456');
+      expect(chatMsg!.userMessageId).toBeUndefined();
     });
 
     it('does not set SDK UUIDs when uuid is absent', () => {
@@ -449,8 +450,8 @@ describe('sdkSession', () => {
 
       const chatMsg = parseSDKMessageToChat(sdkMsg);
 
-      expect(chatMsg!.sdkUserUuid).toBeUndefined();
-      expect(chatMsg!.sdkAssistantUuid).toBeUndefined();
+      expect(chatMsg!.userMessageId).toBeUndefined();
+      expect(chatMsg!.assistantMessageId).toBeUndefined();
     });
 
     it('converts assistant message with text content blocks', () => {
@@ -630,7 +631,7 @@ describe('sdkSession', () => {
       expect(chatMsg!.role).toBe('assistant');
       expect(chatMsg!.content).toBe('');
       expect(chatMsg!.timestamp).toBe(new Date('2024-06-15T12:00:00Z').getTime());
-      expect(chatMsg!.contentBlocks).toEqual([{ type: 'compact_boundary' }]);
+      expect(chatMsg!.contentBlocks).toEqual([{ type: 'context_compacted' }]);
     });
 
     it('generates ID for compact_boundary without uuid', () => {
@@ -1026,7 +1027,7 @@ describe('sdkSession', () => {
       expect(result.messages[2].role).toBe('user');
       expect(result.messages[2].displayContent).toBe('/compact');
       expect(result.messages[3].role).toBe('assistant');
-      expect(result.messages[3].contentBlocks).toEqual([{ type: 'compact_boundary' }]);
+      expect(result.messages[3].contentBlocks).toEqual([{ type: 'context_compacted' }]);
     });
 
     it('renders compact cancellation stderr as interrupt (not filtered)', async () => {
@@ -1124,7 +1125,7 @@ describe('sdkSession', () => {
       expect(result.messages[0].toolCalls![1].name).toBe('Write');
     });
 
-    it('updates sdkAssistantUuid to last entry when merging assistant messages', async () => {
+    it('updates assistantMessageId to last entry when merging assistant messages', async () => {
       mockExistsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockResolvedValue([
         '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"hello"}}',
@@ -1139,7 +1140,7 @@ describe('sdkSession', () => {
       const assistant = result.messages[1];
       expect(assistant.role).toBe('assistant');
       // Must be the last UUID so rewind targets the end of the turn
-      expect(assistant.sdkAssistantUuid).toBe('a1-last');
+      expect(assistant.assistantMessageId).toBe('a1-last');
     });
   });
 
@@ -1534,7 +1535,7 @@ describe('sdkSession', () => {
   });
 
   describe('filterActiveBranch', () => {
-    it('returns all entries for linear chain without resumeSessionAt', () => {
+    it('returns all entries for linear chain without resumeAtMessageId', () => {
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1548,7 +1549,7 @@ describe('sdkSession', () => {
       expect(result).toEqual(entries);
     });
 
-    it('truncates linear chain at resumeSessionAt UUID', () => {
+    it('truncates linear chain at resumeAtMessageId UUID', () => {
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1601,7 +1602,7 @@ describe('sdkSession', () => {
       expect(result.map(e => e.uuid)).toEqual(['u1', 'a1', 'u4', 'a4']);
     });
 
-    it('returns all entries when resumeSessionAt UUID not found (safety)', () => {
+    it('returns all entries when resumeAtMessageId UUID not found (safety)', () => {
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1639,7 +1640,7 @@ describe('sdkSession', () => {
       expect(result.map(e => e.uuid)).toEqual(['u1', 'a1', 'u2', 'a2']);
     });
 
-    it('correctly truncates at resumeSessionAt when duplicates exist', () => {
+    it('correctly truncates at resumeAtMessageId when duplicates exist', () => {
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1675,9 +1676,9 @@ describe('sdkSession', () => {
       expect(result.some(e => e.type === 'queue-operation')).toBe(true);
     });
 
-    it('truncates at resumeSessionAt on latest branch when branching exists', () => {
+    it('truncates at resumeAtMessageId on latest branch when branching exists', () => {
       // Rewind 1 + follow-up created a branch: u3/a3 branch off a1
-      // Rewind 2 on the new branch (no follow-up): resumeSessionAt = a1
+      // Rewind 2 on the new branch (no follow-up): resumeAtMessageId = a1
       // On reload, should truncate at a1, not show u3/a3
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
@@ -1694,9 +1695,9 @@ describe('sdkSession', () => {
       expect(result.map(e => e.uuid)).toEqual(['u1', 'a1']);
     });
 
-    it('truncates at resumeSessionAt mid-branch when branching exists', () => {
+    it('truncates at resumeAtMessageId mid-branch when branching exists', () => {
       // Branch from a1: old (u2→a2) and new (u3→a3→u4→a4)
-      // Rewind on new branch to u4: resumeSessionAt = a3
+      // Rewind on new branch to u4: resumeAtMessageId = a3
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1713,9 +1714,9 @@ describe('sdkSession', () => {
       expect(result.map(e => e.uuid)).toEqual(['u1', 'a1', 'u3', 'a3']);
     });
 
-    it('ignores resumeSessionAt not on latest branch', () => {
+    it('ignores resumeAtMessageId not on latest branch', () => {
       // Branch from a1: old (u2→a2) and new (u3→a3)
-      // resumeSessionAt points to a2 (on the OLD branch) — should be ignored
+      // resumeAtMessageId points to a2 (on the OLD branch) — should be ignored
       const entries: SDKNativeMessage[] = [
         { type: 'user', uuid: 'u1', parentUuid: null },
         { type: 'assistant', uuid: 'a1', parentUuid: 'u1' },
@@ -1728,7 +1729,7 @@ describe('sdkSession', () => {
       // a2 is on old branch, not an ancestor of leaf a3
       const result = filterActiveBranch(entries, 'a2');
 
-      // Should return full latest branch (ignoring stale resumeSessionAt)
+      // Should return full latest branch (ignoring stale resumeAtMessageId)
       expect(result.map(e => e.uuid)).toEqual(['u1', 'a1', 'u3', 'a3']);
     });
 
@@ -1909,8 +1910,8 @@ describe('sdkSession', () => {
     });
   });
 
-  describe('loadSDKSessionMessages with resumeSessionAt', () => {
-    it('returns identical behavior without resumeSessionAt', async () => {
+  describe('loadSDKSessionMessages with resumeAtMessageId', () => {
+    it('returns identical behavior without resumeAtMessageId', async () => {
       mockExistsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockResolvedValue([
         '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"Hello"}}',
@@ -1922,7 +1923,7 @@ describe('sdkSession', () => {
       expect(result.messages).toHaveLength(2);
     });
 
-    it('truncates messages at resumeSessionAt on linear JSONL', async () => {
+    it('truncates messages at resumeAtMessageId on linear JSONL', async () => {
       mockExistsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockResolvedValue([
         '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"Hello"}}',
@@ -2134,6 +2135,13 @@ describe('sdkSession', () => {
     });
   });
 
+  describe('resolveToolUseResultStatus', () => {
+    it('preserves orphaned fallback when the tool result has no stronger signal', () => {
+      expect(resolveToolUseResultStatus(undefined, 'orphaned')).toBe('orphaned');
+      expect(resolveToolUseResultStatus({ status: 'unknown' }, 'orphaned')).toBe('orphaned');
+    });
+  });
+
   describe('loadSDKSessionMessages - async subagent hydration', () => {
     it('populates toolCall.subagent for async Task tools from queue-operation results', async () => {
       mockExistsSync.mockReturnValue(true);
@@ -2177,6 +2185,34 @@ describe('sdkSession', () => {
       expect(taskToolCall.status).toBe('completed');
     });
 
+    it('prefers queue-operation completion over misleading async tool_result error flags', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockImplementation(async (filePath: any) => {
+        const p = String(filePath);
+        if (p.endsWith('.jsonl') && !p.includes('subagents')) {
+          return [
+            '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"Run background task"}}',
+            '{"type":"assistant","uuid":"a1","timestamp":"2024-01-15T10:01:00Z","message":{"content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"Review code","prompt":"Check for bugs","run_in_background":true}}]}}',
+            `{"type":"user","uuid":"u2","timestamp":"2024-01-15T10:01:01Z","toolUseResult":{"isAsync":true,"agentId":"ae5eb9a","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"task-1","content":"Task launched in background.","is_error":true}]}}`,
+            `{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>ae5eb9a</task-id><status>completed</status><summary>Agent completed</summary><result>Background work finished cleanly</result></task-notification>"}`,
+          ].join('\n');
+        }
+        return '';
+      });
+
+      const result = await loadSDKSessionMessages('/Users/test/vault', 'session-async-error-flag');
+
+      const assistantMsg = result.messages.find(m => m.role === 'assistant' && m.toolCalls?.some(tc => tc.name === 'Task'));
+      const taskToolCall = assistantMsg!.toolCalls!.find(tc => tc.name === 'Task')!;
+
+      expect(taskToolCall.subagent).toBeDefined();
+      expect(taskToolCall.subagent!.status).toBe('completed');
+      expect(taskToolCall.subagent!.asyncStatus).toBe('completed');
+      expect(taskToolCall.subagent!.result).toBe('Background work finished cleanly');
+      expect(taskToolCall.status).toBe('completed');
+      expect(taskToolCall.result).toBe('Background work finished cleanly');
+    });
+
     it('uses truncated API result when no queue-operation exists', async () => {
       mockExistsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockImplementation(async (filePath: any) => {
@@ -2199,8 +2235,64 @@ describe('sdkSession', () => {
 
       expect(taskToolCall.subagent).toBeDefined();
       expect(taskToolCall.subagent!.agentId).toBe('abc123');
+      expect(taskToolCall.subagent!.status).toBe('running');
+      expect(taskToolCall.subagent!.asyncStatus).toBe('running');
+      expect(taskToolCall.status).toBe('running');
       // Falls back to the API content (truncated)
       expect(taskToolCall.subagent!.result).toBe('Task launched.');
+    });
+
+    it('treats async launch tool results as running even when the content block is flagged as error', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockImplementation(async (filePath: any) => {
+        const p = String(filePath);
+        if (p.endsWith('.jsonl') && !p.includes('subagents')) {
+          return [
+            '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"Run task"}}',
+            '{"type":"assistant","uuid":"a1","timestamp":"2024-01-15T10:01:00Z","message":{"content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"Test task","prompt":"test","run_in_background":true}}]}}',
+            '{"type":"user","uuid":"u2","timestamp":"2024-01-15T10:01:01Z","toolUseResult":{"isAsync":true,"agentId":"abc123","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"task-1","content":"Task launched in background.","is_error":true}]}}',
+          ].join('\n');
+        }
+        return '';
+      });
+
+      const result = await loadSDKSessionMessages('/Users/test/vault', 'session-async-launch-error-flag');
+
+      const assistantMsg = result.messages.find(m => m.toolCalls?.some(tc => tc.name === 'Task'));
+      const taskToolCall = assistantMsg!.toolCalls!.find(tc => tc.name === 'Task')!;
+
+      expect(taskToolCall.subagent).toBeDefined();
+      expect(taskToolCall.subagent!.status).toBe('running');
+      expect(taskToolCall.subagent!.asyncStatus).toBe('running');
+      expect(taskToolCall.status).toBe('running');
+      expect(taskToolCall.result).toBe('Task launched in background.');
+    });
+
+    it('treats queue-operation success status as completed', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockImplementation(async (filePath: any) => {
+        const p = String(filePath);
+        if (p.endsWith('.jsonl') && !p.includes('subagents')) {
+          return [
+            '{"type":"user","uuid":"u1","timestamp":"2024-01-15T10:00:00Z","message":{"content":"Run task"}}',
+            '{"type":"assistant","uuid":"a1","timestamp":"2024-01-15T10:01:00Z","message":{"content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"Test task","prompt":"test","run_in_background":true}}]}}',
+            '{"type":"user","uuid":"u2","timestamp":"2024-01-15T10:01:01Z","toolUseResult":{"isAsync":true,"agentId":"abc123","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"task-1","content":"Task launched in background."}]}}',
+            '{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>abc123</task-id><status>success</status><result>Background task succeeded</result></task-notification>"}',
+          ].join('\n');
+        }
+        return '';
+      });
+
+      const result = await loadSDKSessionMessages('/Users/test/vault', 'session-queue-success');
+
+      const assistantMsg = result.messages.find(m => m.toolCalls?.some(tc => tc.name === 'Task'));
+      const taskToolCall = assistantMsg!.toolCalls!.find(tc => tc.name === 'Task')!;
+
+      expect(taskToolCall.subagent).toBeDefined();
+      expect(taskToolCall.subagent!.status).toBe('completed');
+      expect(taskToolCall.subagent!.asyncStatus).toBe('completed');
+      expect(taskToolCall.status).toBe('completed');
+      expect(taskToolCall.result).toBe('Background task succeeded');
     });
 
     it('does not build SubagentInfo for sync Task tools', async () => {

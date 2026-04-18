@@ -1,8 +1,8 @@
-import * as os from 'os';
 
-import { TOOL_SUBAGENT } from '@/core/tools';
-import { DEFAULT_SETTINGS, VIEW_TYPE_CLAUDIAN } from '@/core/types';
-import * as sdkSession from '@/utils/sdkSession';
+import { TOOL_SUBAGENT } from '@/core/tools/toolNames';
+import { VIEW_TYPE_CLAUDIAN } from '@/core/types';
+import * as sdkSession from '@/providers/claude/history/ClaudeHistoryStore';
+import { DEFAULT_SETTINGS } from '@/providers/claude/types/settings';
 
 // Mock fs for ClaudianService
 jest.mock('fs');
@@ -14,6 +14,18 @@ describe('ClaudianPlugin', () => {
   let plugin: ClaudianPlugin;
   let mockApp: any;
   let mockManifest: any;
+
+  function getRegisteredCommand(commandId: string) {
+    const call = (plugin.addCommand as jest.Mock).mock.calls.find(
+      ([config]) => config.id === commandId,
+    );
+
+    if (!call) {
+      throw new Error(`Command ${commandId} was not registered`);
+    }
+
+    return call[0];
+  }
 
   beforeEach(() => {
     // Reset mocks
@@ -61,8 +73,8 @@ describe('ClaudianPlugin', () => {
       await plugin.onload();
 
       expect(plugin.settings).toBeDefined();
-      expect(plugin.settings.enableBlocklist).toBe(DEFAULT_SETTINGS.enableBlocklist);
-      expect(plugin.settings.blockedCommands).toEqual(DEFAULT_SETTINGS.blockedCommands);
+      expect(plugin.settings.permissionMode).toBe(DEFAULT_SETTINGS.permissionMode);
+      expect(plugin.settings.hiddenProviderCommands).toEqual(DEFAULT_SETTINGS.hiddenProviderCommands);
     });
 
     // Note: With multi-tab, agentService is per-tab via TabManager, not on plugin
@@ -96,36 +108,6 @@ describe('ClaudianPlugin', () => {
       });
     });
 
-    it('should migrate legacy cli path to hostname-based paths and clear old field', async () => {
-      const legacyPath = '/legacy/claude';
-      mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        // claudeCliPath is now in claudian-settings.json
-        return path === '.claude/claudian-settings.json';
-      });
-      mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/claudian-settings.json') {
-          return JSON.stringify({ claudeCliPath: legacyPath });
-        }
-        return '';
-      });
-
-      await plugin.onload();
-
-      const hostname = os.hostname();
-      // Should migrate to hostname-based path
-      expect(plugin.settings.claudeCliPathsByHost[hostname]).toBe(legacyPath);
-      // Should clear legacy field after migration
-      expect(plugin.settings.claudeCliPath).toBe('');
-      // Should save settings with migrated path and cleared legacy field
-      expect(mockApp.vault.adapter.write).toHaveBeenCalled();
-      const settingsWrite = (mockApp.vault.adapter.write as jest.Mock).mock.calls.find(
-        ([path]) => path === '.claude/claudian-settings.json'
-      );
-      expect(settingsWrite).toBeDefined();
-      const savedSettings = JSON.parse(settingsWrite[1]);
-      expect(savedSettings.claudeCliPathsByHost[hostname]).toBe(legacyPath);
-      expect(savedSettings.claudeCliPath).toBe('');
-    });
   });
 
   describe('onunload', () => {
@@ -209,12 +191,12 @@ describe('ClaudianPlugin', () => {
     it('should merge saved data with defaults', async () => {
       // Mock claudian-settings.json exists with custom values (Claudian-specific settings)
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        return path === '.claude/claudian-settings.json';
+        return path === '.claudian/claudian-settings.json';
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return JSON.stringify({
-            enableBlocklist: false,
+            userName: 'TestUser',
           });
         }
         return '';
@@ -222,19 +204,18 @@ describe('ClaudianPlugin', () => {
 
       await plugin.loadSettings();
 
-      expect(plugin.settings.enableBlocklist).toBe(false);
-      // Should still have defaults for blockedCommands
-      expect(plugin.settings.blockedCommands).toEqual(DEFAULT_SETTINGS.blockedCommands);
+      expect(plugin.settings.userName).toBe('TestUser');
+      expect(plugin.settings.hiddenProviderCommands).toEqual(DEFAULT_SETTINGS.hiddenProviderCommands);
     });
 
-    it('should normalize blockedCommands when stored value is partial', async () => {
-      // Mock claudian-settings.json exists with partial blockedCommands
+    it('should strip legacy blocklist fields when loading old settings', async () => {
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        return path === '.claude/claudian-settings.json';
+        return path === '.claudian/claudian-settings.json';
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return JSON.stringify({
+            enableBlocklist: false,
             blockedCommands: { unix: ['rm -rf', '  '] },
           });
         }
@@ -243,8 +224,19 @@ describe('ClaudianPlugin', () => {
 
       await plugin.loadSettings();
 
-      expect(plugin.settings.blockedCommands.unix).toEqual(['rm -rf']);
-      expect(plugin.settings.blockedCommands.windows).toEqual(DEFAULT_SETTINGS.blockedCommands.windows);
+      expect('enableBlocklist' in plugin.settings).toBe(false);
+      expect('blockedCommands' in plugin.settings).toBe(false);
+      expect(mockApp.vault.adapter.write).toHaveBeenCalledWith(
+        '.claudian/claudian-settings.json',
+        expect.any(String),
+      );
+      const writeCall = (mockApp.vault.adapter.write as jest.Mock).mock.calls.find(
+        ([path]) => path === '.claudian/claudian-settings.json',
+      );
+      expect(writeCall).toBeDefined();
+      const content = JSON.parse(writeCall[1]);
+      expect(content).not.toHaveProperty('enableBlocklist');
+      expect(content).not.toHaveProperty('blockedCommands');
     });
 
     it('should use defaults when no saved data', async () => {
@@ -270,10 +262,10 @@ describe('ClaudianPlugin', () => {
     it('should reconcile model from environment and persist when changed', async () => {
       // Mock claudian-settings.json with environment variables
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        return path === '.claude/claudian-settings.json';
+        return path === '.claudian/claudian-settings.json';
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return JSON.stringify({
             environmentVariables: 'ANTHROPIC_MODEL=custom-model',
             lastEnvHash: '',
@@ -294,26 +286,26 @@ describe('ClaudianPlugin', () => {
     it('should save settings to file', async () => {
       await plugin.onload();
 
-      plugin.settings.enableBlocklist = false;
-
       await plugin.saveSettings();
 
-      // Claudian-specific settings should be written to .claude/claudian-settings.json
+      // Claudian-specific settings should be written to .claudian/claudian-settings.json
       expect(mockApp.vault.adapter.write).toHaveBeenCalledWith(
-        '.claude/claudian-settings.json',
-        expect.stringContaining('"enableBlocklist": false')
+        '.claudian/claudian-settings.json',
+        expect.any(String)
       );
 
       // The written content should include state fields
       const writeCall = (mockApp.vault.adapter.write as jest.Mock).mock.calls.find(
-        ([path]) => path === '.claude/claudian-settings.json'
+        ([path]) => path === '.claudian/claudian-settings.json'
       );
       expect(writeCall).toBeDefined();
       const content = JSON.parse(writeCall[1]);
       expect(content).not.toHaveProperty('activeConversationId');
-      expect(content).toHaveProperty('lastEnvHash');
-      expect(content).toHaveProperty('lastClaudeModel');
+      expect(content).toHaveProperty('providerConfigs.claude.environmentHash');
+      expect(content).toHaveProperty('providerConfigs.claude.lastModel');
       expect(content).toHaveProperty('lastCustomModel');
+      expect(content).not.toHaveProperty('enableBlocklist');
+      expect(content).not.toHaveProperty('blockedCommands');
       // Permissions are now in .claude/settings.json (CC format), not claudian-settings.json
       expect(content).not.toHaveProperty('permissions');
     });
@@ -322,28 +314,27 @@ describe('ClaudianPlugin', () => {
   describe('applyEnvironmentVariables', () => {
     it('updates runtime env vars when changed', async () => {
       await plugin.onload();
-      (plugin as any).runtimeEnvironmentVariables = 'A=1';
 
-      await plugin.applyEnvironmentVariables('A=2');
-      expect((plugin as any).runtimeEnvironmentVariables).toBe('A=2');
+      await plugin.applyEnvironmentVariables('shared', 'A=2');
+      expect(plugin.getEnvironmentVariablesForScope('shared')).toBe('A=2');
 
-      await plugin.applyEnvironmentVariables('A=3');
-      expect((plugin as any).runtimeEnvironmentVariables).toBe('A=3');
+      await plugin.applyEnvironmentVariables('shared', 'A=3');
+      expect(plugin.getEnvironmentVariablesForScope('shared')).toBe('A=3');
 
       // No change - should not update
-      const currentEnv = (plugin as any).runtimeEnvironmentVariables;
-      await plugin.applyEnvironmentVariables('A=3');
-      expect((plugin as any).runtimeEnvironmentVariables).toBe(currentEnv);
+      const currentEnv = plugin.getEnvironmentVariablesForScope('shared');
+      await plugin.applyEnvironmentVariables('shared', 'A=3');
+      expect(plugin.getEnvironmentVariablesForScope('shared')).toBe(currentEnv);
     });
 
     it('invalidates sessions when env hash changes', async () => {
       await plugin.onload();
 
-      const conv = await plugin.createConversation('session-123');
+      const conv = await plugin.createConversation({ sessionId: 'session-123' });
       const saveMetadataSpy = jest.spyOn(plugin.storage.sessions, 'saveMetadata');
       saveMetadataSpy.mockClear();
 
-      await plugin.applyEnvironmentVariables('ANTHROPIC_MODEL=claude-sonnet-4-5');
+      await plugin.applyEnvironmentVariables('provider:claude', 'ANTHROPIC_MODEL=claude-sonnet-4-5');
 
       const updated = await plugin.getConversationById(conv.id);
       expect(updated?.sessionId).toBeNull();
@@ -355,12 +346,14 @@ describe('ClaudianPlugin', () => {
 
       // Mock getView to return a view with tabManager
       const mockEnsureReady = jest.fn().mockResolvedValue(true);
-      const mockBroadcast = jest.fn().mockImplementation(async (fn) => {
-        await fn({ ensureReady: mockEnsureReady });
-      });
       const mockTabManager = {
-        broadcastToAllTabs: mockBroadcast,
-        getAllTabs: jest.fn().mockReturnValue([]),
+        getAllTabs: jest.fn().mockReturnValue([{
+          providerId: 'claude',
+          state: { isStreaming: false },
+          serviceInitialized: true,
+          service: { ensureReady: mockEnsureReady },
+          ui: { externalContextSelector: { getExternalContexts: jest.fn().mockReturnValue([]) } },
+        }]),
       };
       const mockView = {
         getTabManager: jest.fn().mockReturnValue(mockTabManager),
@@ -369,9 +362,8 @@ describe('ClaudianPlugin', () => {
       jest.spyOn(plugin, 'getView').mockReturnValue(mockView as any);
 
       // Change env but not in a way that affects model
-      await plugin.applyEnvironmentVariables('SOME_VAR=value');
+      await plugin.applyEnvironmentVariables('shared', 'SOME_VAR=value');
 
-      expect(mockBroadcast).toHaveBeenCalled();
       expect(mockEnsureReady).toHaveBeenCalledWith({ force: true });
     });
   });
@@ -399,6 +391,108 @@ describe('ClaudianPlugin', () => {
       await commandConfig.callback();
 
       expect(mockApp.workspace.revealLeaf).toHaveBeenCalledWith(mockLeaf);
+    });
+  });
+
+  describe('new-tab command', () => {
+    it('opens the view without creating a duplicate tab when no tab layout is persisted', async () => {
+      await plugin.onload();
+
+      const createNewTab = jest.fn().mockResolvedValue(undefined);
+      const mockView = {
+        createNewTab,
+      };
+
+      let viewOpened = false;
+      jest.spyOn(plugin, 'activateView').mockImplementation(async () => {
+        viewOpened = true;
+      });
+      jest.spyOn(plugin, 'getView').mockImplementation(() => (
+        viewOpened ? mockView as any : null
+      ));
+
+      const command = getRegisteredCommand('new-tab');
+
+      expect(command.checkCallback(true)).toBe(true);
+      expect(command.checkCallback(false)).toBe(true);
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(plugin.activateView).toHaveBeenCalledTimes(1);
+      expect(createNewTab).not.toHaveBeenCalled();
+    });
+
+    it('creates a new tab after reopening a persisted tab layout', async () => {
+      (plugin.loadData as jest.Mock).mockResolvedValue({
+        tabManagerState: {
+          openTabs: [
+            { tabId: 'tab-1', conversationId: null },
+          ],
+          activeTabId: 'tab-1',
+        },
+      });
+
+      await plugin.onload();
+
+      const createNewTab = jest.fn().mockResolvedValue(undefined);
+      const mockView = {
+        createNewTab,
+      };
+
+      let viewOpened = false;
+      jest.spyOn(plugin, 'activateView').mockImplementation(async () => {
+        viewOpened = true;
+      });
+      jest.spyOn(plugin, 'getView').mockImplementation(() => (
+        viewOpened ? mockView as any : null
+      ));
+
+      const command = getRegisteredCommand('new-tab');
+
+      expect(command.checkCallback(true)).toBe(true);
+      expect(command.checkCallback(false)).toBe(true);
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(plugin.activateView).toHaveBeenCalledTimes(1);
+      expect(createNewTab).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays unavailable when the open view is already at the tab limit', async () => {
+      await plugin.onload();
+
+      const mockView = {
+        getTabManager: jest.fn().mockReturnValue({
+          canCreateTab: jest.fn().mockReturnValue(false),
+        }),
+      };
+
+      jest.spyOn(plugin, 'getView').mockReturnValue(mockView as any);
+
+      const command = getRegisteredCommand('new-tab');
+
+      expect(command.checkCallback(true)).toBe(false);
+    });
+
+    it('stays unavailable when reopening the persisted layout would already hit the tab limit', async () => {
+      (plugin.loadData as jest.Mock).mockResolvedValue({
+        tabManagerState: {
+          openTabs: [
+            { tabId: 'tab-1', conversationId: null },
+            { tabId: 'tab-2', conversationId: null },
+            { tabId: 'tab-3', conversationId: null },
+          ],
+          activeTabId: 'tab-3',
+        },
+      });
+
+      await plugin.onload();
+
+      jest.spyOn(plugin, 'getView').mockReturnValue(null);
+
+      const command = getRegisteredCommand('new-tab');
+
+      expect(command.checkCallback(true)).toBe(false);
     });
   });
 
@@ -584,10 +678,9 @@ describe('ClaudianPlugin', () => {
   });
 
   describe('loadSettings with conversations', () => {
-    it('should load saved conversations from JSONL files', async () => {
+    it('should load saved conversations from metadata files', async () => {
       const timestamp = Date.now();
-      const sessionJsonl = JSON.stringify({
-        type: 'meta',
+      const sessionMeta = JSON.stringify({
         id: 'conv-saved-1',
         title: 'Saved Chat',
         createdAt: timestamp,
@@ -598,26 +691,26 @@ describe('ClaudianPlugin', () => {
       // Mock files exist
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
         // Session files
-        if (path === '.claude/sessions' || path === '.claude/sessions/conv-saved-1.jsonl') {
+        if (path === '.claudian/sessions' || path === '.claudian/sessions/conv-saved-1.meta.json') {
           return true;
         }
         // claudian-settings.json exists
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return true;
         }
         return false;
       });
       mockApp.vault.adapter.list.mockImplementation(async (path: string) => {
-        if (path === '.claude/sessions') {
-          return { files: ['.claude/sessions/conv-saved-1.jsonl'], folders: [] };
+        if (path === '.claudian/sessions') {
+          return { files: ['.claudian/sessions/conv-saved-1.meta.json'], folders: [] };
         }
         return { files: [], folders: [] };
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/sessions/conv-saved-1.jsonl') {
-          return sessionJsonl;
+        if (path === '.claudian/sessions/conv-saved-1.meta.json') {
+          return sessionMeta;
         }
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return JSON.stringify({});
         }
         return '';
@@ -635,8 +728,7 @@ describe('ClaudianPlugin', () => {
 
     it('should clear session IDs when provider base URL changes', async () => {
       const timestamp = Date.now();
-      const sessionJsonl = JSON.stringify({
-        type: 'meta',
+      const sessionMeta = JSON.stringify({
         id: 'conv-saved-1',
         title: 'Saved Chat',
         createdAt: timestamp,
@@ -645,26 +737,26 @@ describe('ClaudianPlugin', () => {
       });
 
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        return path === '.claude/claudian-settings.json' ||
-          path === '.claude/sessions' ||
-          path === '.claude/sessions/conv-saved-1.jsonl';
+        return path === '.claudian/claudian-settings.json' ||
+          path === '.claudian/sessions' ||
+          path === '.claudian/sessions/conv-saved-1.meta.json';
       });
       mockApp.vault.adapter.list.mockImplementation(async (path: string) => {
-        if (path === '.claude/sessions') {
-          return { files: ['.claude/sessions/conv-saved-1.jsonl'], folders: [] };
+        if (path === '.claudian/sessions') {
+          return { files: ['.claudian/sessions/conv-saved-1.meta.json'], folders: [] };
         }
         return { files: [], folders: [] };
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           // All these fields are now in claudian-settings.json
           return JSON.stringify({
             lastEnvHash: 'old-hash',
             environmentVariables: 'ANTHROPIC_BASE_URL=https://api.example.com',
           });
         }
-        if (path === '.claude/sessions/conv-saved-1.jsonl') {
-          return sessionJsonl;
+        if (path === '.claudian/sessions/conv-saved-1.meta.json') {
+          return sessionMeta;
         }
         return '';
       });
@@ -678,11 +770,10 @@ describe('ClaudianPlugin', () => {
       expect(loaded?.sessionId).toBeNull();
 
       const sessionWrite = (mockApp.vault.adapter.write as jest.Mock).mock.calls.find(
-        ([path]) => path === '.claude/sessions/conv-saved-1.jsonl'
+        ([path]) => path === '.claudian/sessions/conv-saved-1.meta.json'
       );
       expect(sessionWrite).toBeDefined();
-      const metaLine = (sessionWrite?.[1] as string).split(/\r?\n/)[0];
-      const meta = JSON.parse(metaLine);
+      const meta = JSON.parse(sessionWrite?.[1] as string);
       expect(meta.sessionId).toBeNull();
     });
 
@@ -703,37 +794,38 @@ describe('ClaudianPlugin', () => {
   });
 
   describe('Multi-session message loading', () => {
-    it('should load messages from previousSdkSessionIds when present', async () => {
+    it('should load messages from previousProviderSessionIds when present', async () => {
       const timestamp = Date.now();
 
-      // Setup conversation with previousSdkSessionIds
+      // Setup conversation with previousProviderSessionIds
       const sessionMeta = JSON.stringify({
         type: 'meta',
         id: 'conv-multi-session',
         title: 'Multi Session Chat',
         createdAt: timestamp,
         updatedAt: timestamp,
-        sdkSessionId: 'session-B',
-        previousSdkSessionIds: ['session-A'],
-        isNative: true,
+        providerState: {
+          providerSessionId: 'session-B',
+          previousProviderSessionIds: ['session-A'],
+        },
       });
 
       mockApp.vault.adapter.exists.mockImplementation(async (path: string) => {
-        return path === '.claude/claudian-settings.json' ||
-          path === '.claude/sessions' ||
-          path === '.claude/sessions/conv-multi-session.meta.json';
+        return path === '.claudian/claudian-settings.json' ||
+          path === '.claudian/sessions' ||
+          path === '.claudian/sessions/conv-multi-session.meta.json';
       });
       mockApp.vault.adapter.list.mockImplementation(async (path: string) => {
-        if (path === '.claude/sessions') {
-          return { files: ['.claude/sessions/conv-multi-session.meta.json'], folders: [] };
+        if (path === '.claudian/sessions') {
+          return { files: ['.claudian/sessions/conv-multi-session.meta.json'], folders: [] };
         }
         return { files: [], folders: [] };
       });
       mockApp.vault.adapter.read.mockImplementation(async (path: string) => {
-        if (path === '.claude/sessions/conv-multi-session.meta.json') {
+        if (path === '.claudian/sessions/conv-multi-session.meta.json') {
           return sessionMeta;
         }
-        if (path === '.claude/claudian-settings.json') {
+        if (path === '.claudian/claudian-settings.json') {
           return JSON.stringify({});
         }
         return '';
@@ -744,45 +836,47 @@ describe('ClaudianPlugin', () => {
       await plugin.loadSettings();
 
       const loaded = await plugin.getConversationById('conv-multi-session');
-      expect(loaded?.previousSdkSessionIds).toEqual(['session-A']);
-      expect(loaded?.sdkSessionId).toBe('session-B');
+      expect((loaded?.providerState as any)?.previousProviderSessionIds).toEqual(['session-A']);
+      expect((loaded?.providerState as any)?.providerSessionId).toBe('session-B');
     });
 
-    it('should preserve previousSdkSessionIds through conversation updates', async () => {
+    it('should preserve previousProviderSessionIds through conversation updates', async () => {
       await plugin.onload();
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        sdkSessionId: 'session-B',
-        previousSdkSessionIds: ['session-A'],
-        isNative: true,
+        providerState: {
+          providerSessionId: 'session-B',
+          previousProviderSessionIds: ['session-A'],
+        },
       });
 
       const updated = await plugin.getConversationById(conv.id);
-      expect(updated?.previousSdkSessionIds).toEqual(['session-A']);
-      expect(updated?.sdkSessionId).toBe('session-B');
+      expect((updated?.providerState as any)?.previousProviderSessionIds).toEqual(['session-A']);
+      expect((updated?.providerState as any)?.providerSessionId).toBe('session-B');
 
-      // Further update should preserve previousSdkSessionIds
+      // Further update should preserve previousProviderSessionIds
       await plugin.updateConversation(conv.id, {
         title: 'Updated Title',
       });
 
       const afterTitleUpdate = await plugin.getConversationById(conv.id);
-      expect(afterTitleUpdate?.previousSdkSessionIds).toEqual(['session-A']);
+      expect((afterTitleUpdate?.providerState as any)?.previousProviderSessionIds).toEqual(['session-A']);
     });
 
-    it('should handle empty previousSdkSessionIds array', async () => {
+    it('should handle empty previousProviderSessionIds array', async () => {
       await plugin.onload();
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        sdkSessionId: 'session-A',
-        previousSdkSessionIds: [],
-        isNative: true,
+        providerState: {
+          providerSessionId: 'session-A',
+          previousProviderSessionIds: [],
+        },
       });
 
       const updated = await plugin.getConversationById(conv.id);
-      expect(updated?.previousSdkSessionIds).toEqual([]);
+      expect((updated?.providerState as any)?.previousProviderSessionIds).toEqual([]);
     });
   });
 
@@ -792,13 +886,12 @@ describe('ClaudianPlugin', () => {
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        forkSource: { sessionId: 'source-session-abc', resumeAt: 'asst-uuid-cutoff' },
-        // No sessionId or sdkSessionId → isPendingFork returns true
+        providerState: {
+          forkSource: { sessionId: 'source-session-abc', resumeAt: 'asst-uuid-cutoff' },
+          // No providerSessionId → isPendingFork returns true
+          providerSessionId: undefined,
+        },
         sessionId: null,
-        sdkSessionId: undefined,
-        // Reset sdkMessagesLoaded to simulate plugin restart
-        sdkMessagesLoaded: false,
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -827,21 +920,21 @@ describe('ClaudianPlugin', () => {
       );
 
       // Messages should be loaded
-      expect(loaded?.sdkMessagesLoaded).toBe(true);
+      expect(loaded?.messages).toBeDefined();
 
       existsSpy.mockRestore();
       loadSpy.mockRestore();
     });
 
-    it('should NOT use fork path when conversation has its own sdkSessionId', async () => {
+    it('should NOT use fork path when conversation has its own providerSessionId', async () => {
       await plugin.onload();
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        forkSource: { sessionId: 'source-session', resumeAt: 'asst-uuid' },
-        sdkSessionId: 'own-session-id',
-        sdkMessagesLoaded: false,
+        providerState: {
+          forkSource: { sessionId: 'source-session', resumeAt: 'asst-uuid' },
+          providerSessionId: 'own-session-id',
+        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -869,9 +962,27 @@ describe('ClaudianPlugin', () => {
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        sdkSessionId: 'session-subagent-recovery',
-        sdkMessagesLoaded: false,
+        providerState: {
+          providerSessionId: 'session-subagent-recovery',
+          subagentData: {
+            'task-1': {
+              id: 'task-1',
+              description: 'Recovered subagent',
+              status: 'completed',
+              result: 'Recovered result',
+              toolCalls: [
+                {
+                  id: 'sub-tool-1',
+                  name: 'Read',
+                  input: { file_path: 'README.md' },
+                  status: 'completed',
+                  result: 'content',
+                } as any,
+              ],
+              isExpanded: false,
+            } as any,
+          },
+        },
         messages: [
           {
             id: 'assistant-1',
@@ -891,24 +1002,6 @@ describe('ClaudianPlugin', () => {
             contentBlocks: [{ type: 'text', content: 'Done' }] as any,
           } as any,
         ],
-        subagentData: {
-          'task-1': {
-            id: 'task-1',
-            description: 'Recovered subagent',
-            status: 'completed',
-            result: 'Recovered result',
-            toolCalls: [
-              {
-                id: 'sub-tool-1',
-                name: 'Read',
-                input: { file_path: 'README.md' },
-                status: 'completed',
-                result: 'content',
-              } as any,
-            ],
-            isExpanded: false,
-          } as any,
-        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -947,9 +1040,21 @@ describe('ClaudianPlugin', () => {
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        sdkSessionId: 'session-subagent-merge',
-        sdkMessagesLoaded: false,
+        providerState: {
+          providerSessionId: 'session-subagent-merge',
+          subagentData: {
+            'task-merge-1': {
+              id: 'task-merge-1',
+              description: 'Recovered subagent',
+              mode: 'async',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Short stale result',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
         messages: [
           {
             id: 'assistant-merge',
@@ -968,18 +1073,6 @@ describe('ClaudianPlugin', () => {
             contentBlocks: [{ type: 'subagent', subagentId: 'task-merge-1', mode: 'async' }] as any,
           } as any,
         ],
-        subagentData: {
-          'task-merge-1': {
-            id: 'task-merge-1',
-            description: 'Recovered subagent',
-            mode: 'async',
-            asyncStatus: 'completed',
-            status: 'completed',
-            result: 'Short stale result',
-            toolCalls: [],
-            isExpanded: false,
-          } as any,
-        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -1003,14 +1096,292 @@ describe('ClaudianPlugin', () => {
       loadSpy.mockRestore();
     });
 
+    it('keeps the richer cached async result when both SDK and cache are terminal', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      await plugin.updateConversation(conv.id, {
+        providerState: {
+          providerSessionId: 'session-subagent-cache-richer',
+          subagentData: {
+            'task-merge-2': {
+              id: 'task-merge-2',
+              description: 'Recovered subagent',
+              mode: 'async',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Recovered final result with full details',
+              toolCalls: [],
+              isExpanded: false,
+              agentId: 'agent-cache-richer',
+            } as any,
+          },
+        },
+        messages: [],
+      });
+
+      const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
+      const loadSpy = jest.spyOn(sdkSession, 'loadSDKSessionMessages').mockResolvedValue({
+        messages: [
+          {
+            id: 'assistant-cache-richer',
+            role: 'assistant',
+            content: '',
+            timestamp: 1000,
+            toolCalls: [
+              {
+                id: 'task-merge-2',
+                name: 'Task',
+                input: { description: 'SDK async subagent', run_in_background: true },
+                status: 'completed',
+                result: 'Short SDK result',
+                subagent: {
+                  id: 'task-merge-2',
+                  description: 'SDK async subagent',
+                  mode: 'async',
+                  asyncStatus: 'completed',
+                  status: 'completed',
+                  result: 'Short SDK result',
+                  toolCalls: [],
+                  isExpanded: false,
+                  agentId: 'agent-cache-richer',
+                },
+              } as any,
+            ],
+            contentBlocks: [{ type: 'subagent', subagentId: 'task-merge-2', mode: 'async' }] as any,
+          } as any,
+        ],
+        skippedLines: 0,
+      });
+
+      const loaded = await plugin.getConversationById(conv.id);
+      const taskTool = loaded?.messages[0].toolCalls?.find(tc => tc.id === 'task-merge-2');
+
+      expect(taskTool?.status).toBe('completed');
+      expect(taskTool?.result).toBe('Recovered final result with full details');
+      expect(taskTool?.subagent?.result).toBe('Recovered final result with full details');
+
+      existsSpy.mockRestore();
+      loadSpy.mockRestore();
+    });
+
+    it('drops stale asyncStatus from cached sync subagents during recovery', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      await plugin.updateConversation(conv.id, {
+        providerState: {
+          providerSessionId: 'session-sync-subagent-cleanup',
+          subagentData: {
+            'task-sync-1': {
+              id: 'task-sync-1',
+              description: 'Recovered sync subagent',
+              mode: 'sync',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Recovered sync result',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
+        messages: [
+          {
+            id: 'assistant-sync',
+            role: 'assistant',
+            content: '',
+            timestamp: 1000,
+            toolCalls: [
+              {
+                id: 'task-sync-1',
+                name: 'Task',
+                input: { description: 'Do sync task' },
+                status: 'completed',
+                result: 'Sync result',
+              } as any,
+            ],
+            contentBlocks: [{ type: 'subagent', subagentId: 'task-sync-1', mode: 'sync' }] as any,
+          } as any,
+        ],
+      });
+
+      const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
+      const loadSpy = jest.spyOn(sdkSession, 'loadSDKSessionMessages').mockResolvedValue({
+        messages: [],
+        skippedLines: 0,
+      });
+
+      const loaded = await plugin.getConversationById(conv.id);
+      const taskTool = loaded?.messages[0].toolCalls?.find(tc => tc.id === 'task-sync-1');
+
+      expect(taskTool?.subagent?.mode).toBe('sync');
+      expect(taskTool?.subagent?.asyncStatus).toBeUndefined();
+
+      existsSpy.mockRestore();
+      loadSpy.mockRestore();
+    });
+
+    it('prefers terminal SDK async status over stale cached running state', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      await plugin.updateConversation(conv.id, {
+        providerState: {
+          providerSessionId: 'session-async-sdk-terminal',
+          subagentData: {
+            'task-async-sdk-terminal': {
+              id: 'task-async-sdk-terminal',
+              description: 'Cached async subagent',
+              mode: 'async',
+              asyncStatus: 'running',
+              status: 'running',
+              result: 'Still running',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
+        messages: [],
+      });
+
+      const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
+      const loadSpy = jest.spyOn(sdkSession, 'loadSDKSessionMessages').mockResolvedValue({
+        messages: [
+          {
+            id: 'assistant-sdk-terminal',
+            role: 'assistant',
+            content: '',
+            timestamp: 1000,
+            toolCalls: [
+              {
+                id: 'task-async-sdk-terminal',
+                name: 'Task',
+                input: { description: 'SDK async subagent', run_in_background: true },
+                status: 'completed',
+                result: 'Full SDK final result',
+                subagent: {
+                  id: 'task-async-sdk-terminal',
+                  description: 'SDK async subagent',
+                  mode: 'async',
+                  asyncStatus: 'completed',
+                  status: 'completed',
+                  result: 'Full SDK final result',
+                  toolCalls: [],
+                  isExpanded: false,
+                  agentId: 'agent-sdk-terminal',
+                },
+              } as any,
+            ],
+            contentBlocks: [{ type: 'subagent', subagentId: 'task-async-sdk-terminal', mode: 'async' }] as any,
+          } as any,
+        ],
+        skippedLines: 0,
+      });
+
+      const loaded = await plugin.getConversationById(conv.id);
+      const taskTool = loaded?.messages[0].toolCalls?.find(tc => tc.id === 'task-async-sdk-terminal');
+
+      expect(taskTool?.status).toBe('completed');
+      expect(taskTool?.result).toBe('Full SDK final result');
+      expect(taskTool?.subagent?.status).toBe('completed');
+      expect(taskTool?.subagent?.asyncStatus).toBe('completed');
+      expect(taskTool?.subagent?.result).toBe('Full SDK final result');
+
+      existsSpy.mockRestore();
+      loadSpy.mockRestore();
+    });
+
+    it('prefers cached terminal async status over SDK launch-only running state', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      await plugin.updateConversation(conv.id, {
+        providerState: {
+          providerSessionId: 'session-async-cache-terminal',
+          subagentData: {
+            'task-async-cache-terminal': {
+              id: 'task-async-cache-terminal',
+              description: 'Cached async subagent',
+              mode: 'async',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Recovered final result',
+              toolCalls: [],
+              isExpanded: false,
+              agentId: 'agent-cache-terminal',
+            } as any,
+          },
+        },
+        messages: [],
+      });
+
+      const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
+      const loadSpy = jest.spyOn(sdkSession, 'loadSDKSessionMessages').mockResolvedValue({
+        messages: [
+          {
+            id: 'assistant-sdk-running',
+            role: 'assistant',
+            content: '',
+            timestamp: 1000,
+            toolCalls: [
+              {
+                id: 'task-async-cache-terminal',
+                name: 'Task',
+                input: { description: 'SDK async subagent', run_in_background: true },
+                status: 'running',
+                result: 'Task launched in background.',
+                subagent: {
+                  id: 'task-async-cache-terminal',
+                  description: 'SDK async subagent',
+                  mode: 'async',
+                  asyncStatus: 'running',
+                  status: 'running',
+                  result: 'Task launched in background.',
+                  toolCalls: [],
+                  isExpanded: false,
+                  agentId: 'agent-cache-terminal',
+                },
+              } as any,
+            ],
+            contentBlocks: [{ type: 'subagent', subagentId: 'task-async-cache-terminal', mode: 'async' }] as any,
+          } as any,
+        ],
+        skippedLines: 0,
+      });
+
+      const loaded = await plugin.getConversationById(conv.id);
+      const taskTool = loaded?.messages[0].toolCalls?.find(tc => tc.id === 'task-async-cache-terminal');
+
+      expect(taskTool?.status).toBe('completed');
+      expect(taskTool?.result).toBe('Recovered final result');
+      expect(taskTool?.subagent?.status).toBe('completed');
+      expect(taskTool?.subagent?.asyncStatus).toBe('completed');
+      expect(taskTool?.subagent?.result).toBe('Recovered final result');
+
+      existsSpy.mockRestore();
+      loadSpy.mockRestore();
+    });
+
     it('restores async subagent data and mode when Task tool exists but async block is missing', async () => {
       await plugin.onload();
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        sdkSessionId: 'session-async-subagent-recovery',
-        sdkMessagesLoaded: false,
+        providerState: {
+          providerSessionId: 'session-async-subagent-recovery',
+          subagentData: {
+            'task-async-1': {
+              id: 'task-async-1',
+              description: 'Recovered async subagent',
+              mode: 'async',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Recovered async result',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
         messages: [
           {
             id: 'assistant-1',
@@ -1029,18 +1400,6 @@ describe('ClaudianPlugin', () => {
             contentBlocks: [{ type: 'text', content: 'Started' }] as any,
           } as any,
         ],
-        subagentData: {
-          'task-async-1': {
-            id: 'task-async-1',
-            description: 'Recovered async subagent',
-            mode: 'async',
-            asyncStatus: 'completed',
-            status: 'completed',
-            result: 'Recovered async result',
-            toolCalls: [],
-            isExpanded: false,
-          } as any,
-        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -1077,9 +1436,22 @@ describe('ClaudianPlugin', () => {
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        sdkSessionId: 'session-async-subagent-tools',
-        sdkMessagesLoaded: false,
+        providerState: {
+          providerSessionId: 'session-async-subagent-tools',
+          subagentData: {
+            'task-async-tools': {
+              id: 'task-async-tools',
+              description: 'Recovered async subagent',
+              mode: 'async',
+              asyncStatus: 'completed',
+              status: 'completed',
+              result: 'Recovered async result',
+              agentId: 'agent-a123',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
         messages: [
           {
             id: 'assistant-1',
@@ -1098,19 +1470,6 @@ describe('ClaudianPlugin', () => {
             contentBlocks: [{ type: 'subagent', subagentId: 'task-async-tools', mode: 'async' }] as any,
           } as any,
         ],
-        subagentData: {
-          'task-async-tools': {
-            id: 'task-async-tools',
-            description: 'Recovered async subagent',
-            mode: 'async',
-            asyncStatus: 'completed',
-            status: 'completed',
-            result: 'Recovered async result',
-            agentId: 'agent-a123',
-            toolCalls: [],
-            isExpanded: false,
-          } as any,
-        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);
@@ -1157,9 +1516,21 @@ describe('ClaudianPlugin', () => {
 
       const conv = await plugin.createConversation();
       await plugin.updateConversation(conv.id, {
-        isNative: true,
-        sdkSessionId: 'session-async-subagent-fallback',
-        sdkMessagesLoaded: false,
+        providerState: {
+          providerSessionId: 'session-async-subagent-fallback',
+          subagentData: {
+            'task-async-orphan': {
+              id: 'task-async-orphan',
+              description: 'Recovered async orphan subagent',
+              mode: 'async',
+              asyncStatus: 'running',
+              status: 'running',
+              result: 'Running in background',
+              toolCalls: [],
+              isExpanded: false,
+            } as any,
+          },
+        },
         messages: [
           {
             id: 'assistant-1',
@@ -1169,18 +1540,6 @@ describe('ClaudianPlugin', () => {
             contentBlocks: [{ type: 'text', content: 'Background work started' }] as any,
           } as any,
         ],
-        subagentData: {
-          'task-async-orphan': {
-            id: 'task-async-orphan',
-            description: 'Recovered async orphan subagent',
-            mode: 'async',
-            asyncStatus: 'running',
-            status: 'running',
-            result: 'Running in background',
-            toolCalls: [],
-            isExpanded: false,
-          } as any,
-        },
       });
 
       const existsSpy = jest.spyOn(sdkSession, 'sdkSessionExists').mockReturnValue(true);

@@ -4,7 +4,6 @@ import type {
   ChatStateCallbacks,
   ChatStateData,
   PendingToolCall,
-  PermissionMode,
   QueuedMessage,
   ThinkingBlockState,
   TodoItem,
@@ -19,6 +18,7 @@ function createInitialState(): ChatStateData {
     streamGeneration: 0,
     isCreatingConversation: false,
     isSwitchingConversation: false,
+    hasPendingConversationSave: false,
     currentConversationId: null,
     queuedMessage: null,
     currentContentEl: null,
@@ -137,6 +137,14 @@ export class ChatState {
 
   set isSwitchingConversation(value: boolean) {
     this.state.isSwitchingConversation = value;
+  }
+
+  get hasPendingConversationSave(): boolean {
+    return this.state.hasPendingConversationSave;
+  }
+
+  set hasPendingConversationSave(value: boolean) {
+    this.state.hasPendingConversationSave = value;
   }
 
   // ============================================
@@ -341,11 +349,11 @@ export class ChatState {
     this.state.planFilePath = value;
   }
 
-  get prePlanPermissionMode(): PermissionMode | null {
+  get prePlanPermissionMode(): string | null {
     return this.state.prePlanPermissionMode;
   }
 
-  set prePlanPermissionMode(value: PermissionMode | null) {
+  set prePlanPermissionMode(value: string | null) {
     this.state.prePlanPermissionMode = value;
   }
 
