@@ -52,6 +52,10 @@ describe('types.ts', () => {
       expect(getClaudeProviderSettings(DEFAULT_SETTINGS).lastModel).toBe('haiku');
     });
 
+    it('should have empty custom Claude models by default', () => {
+      expect(getClaudeProviderSettings(DEFAULT_SETTINGS).customModels).toBe('');
+    });
+
     it('should have lastCustomModel as empty string by default', () => {
       expect(DEFAULT_SETTINGS.lastCustomModel).toBe('');
     });
@@ -102,6 +106,7 @@ describe('types.ts', () => {
         savedProviderEffort: {},
         savedProviderServiceTier: {},
         savedProviderThinkingBudget: {},
+        savedProviderPermissionMode: {},
       };
 
       expect(settings.permissionMode).toBe('yolo');
@@ -152,6 +157,7 @@ describe('types.ts', () => {
         savedProviderEffort: {},
         savedProviderServiceTier: {},
         savedProviderThinkingBudget: {},
+        savedProviderPermissionMode: {},
       };
 
       expect(settings.model).toBe('anthropic/custom-model-v1');
@@ -203,6 +209,7 @@ describe('types.ts', () => {
         savedProviderEffort: {},
         savedProviderServiceTier: {},
         savedProviderThinkingBudget: {},
+        savedProviderPermissionMode: {},
       };
 
       expect(settings.lastClaudeModel).toBe('opus');
@@ -594,6 +601,12 @@ describe('types.ts', () => {
         expect(getContextWindowSize('sonnet[1m]')).toBe(CONTEXT_WINDOW_1M);
       });
 
+      it('should treat [1M] and [1m] suffixes equivalently', () => {
+        expect(getContextWindowSize('opus[1M]')).toBe(CONTEXT_WINDOW_1M);
+        expect(getContextWindowSize('claude-opus-4-6[1M]')).toBe(CONTEXT_WINDOW_1M);
+        expect(getContextWindowSize('claude-sonnet-4-6[1M]')).toBe(CONTEXT_WINDOW_1M);
+      });
+
       it('should return 1M for full model IDs with [1m] suffix', () => {
         expect(getContextWindowSize('claude-opus-4-6[1m]')).toBe(CONTEXT_WINDOW_1M);
         expect(getContextWindowSize('claude-sonnet-4-6[1m]')).toBe(CONTEXT_WINDOW_1M);
@@ -602,6 +615,11 @@ describe('types.ts', () => {
       it('should prefer custom limits over [1m] suffix', () => {
         const customLimits = { 'opus[1m]': 500000 };
         expect(getContextWindowSize('opus[1m]', customLimits)).toBe(500000);
+      });
+
+      it('should match custom limits case-insensitively for [1M] suffixes', () => {
+        const customLimits = { 'claude-opus-4-6[1m]': 500000 };
+        expect(getContextWindowSize('claude-opus-4-6[1M]', customLimits)).toBe(500000);
       });
 
       it('should return standard for models without [1m] suffix', () => {
@@ -640,6 +658,11 @@ describe('types.ts', () => {
         expect(normalizeVisibleModelVariant('opus[1m]', false, true)).toBe('opus');
       });
 
+      it('should normalize built-in variants regardless of 1M suffix casing', () => {
+        expect(normalizeVisibleModelVariant('sonnet[1M]', false, false)).toBe('sonnet');
+        expect(normalizeVisibleModelVariant('opus[1M]', true, false)).toBe('opus[1m]');
+      });
+
       it('should leave unrelated model ids unchanged', () => {
         expect(normalizeVisibleModelVariant('', true, true)).toBe('');
         expect(normalizeVisibleModelVariant('haiku', true, true)).toBe('haiku');
@@ -655,6 +678,7 @@ describe('types.ts', () => {
       expect(isAdaptiveThinkingModel('sonnet[1m]')).toBe(true);
       expect(isAdaptiveThinkingModel('opus')).toBe(true);
       expect(isAdaptiveThinkingModel('opus[1m]')).toBe(true);
+      expect(isAdaptiveThinkingModel('opus[1M]')).toBe(true);
     });
 
     it('should return true for full Claude model IDs', () => {
@@ -684,6 +708,7 @@ describe('types.ts', () => {
     it('should return true for full versioned 1M model IDs', () => {
       expect(isAdaptiveThinkingModel('claude-opus-4-6[1m]')).toBe(true);
       expect(isAdaptiveThinkingModel('claude-sonnet-4-6[1m]')).toBe(true);
+      expect(isAdaptiveThinkingModel('claude-opus-4-6[1M]')).toBe(true);
     });
   });
 
@@ -691,6 +716,7 @@ describe('types.ts', () => {
     it('returns true for opus aliases and 4.7+ opus ids', () => {
       expect(supportsXHighEffort('opus')).toBe(true);
       expect(supportsXHighEffort('opus[1m]')).toBe(true);
+      expect(supportsXHighEffort('opus[1M]')).toBe(true);
       expect(supportsXHighEffort('claude-opus-4-7')).toBe(true);
       expect(supportsXHighEffort('claude-opus-5')).toBe(true);
     });

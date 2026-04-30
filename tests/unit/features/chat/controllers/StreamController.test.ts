@@ -13,6 +13,7 @@ import {
 import type { ChatMessage } from '@/core/types';
 import { StreamController, type StreamControllerDeps } from '@/features/chat/controllers/StreamController';
 import { ChatState } from '@/features/chat/state/ChatState';
+import { DEFAULT_CODEX_PRIMARY_MODEL } from '@/providers/codex/types/models';
 
 jest.mock('@/core/tools/todo', () => ({
   parseTodoInput: jest.fn(),
@@ -33,12 +34,12 @@ jest.mock('@/features/chat/rendering/SubagentRenderer', () => ({
 
 jest.mock('@/features/chat/rendering/ThinkingBlockRenderer', () => ({
   appendThinkingContent: jest.fn(),
-  createThinkingBlock: jest.fn().mockReturnValue({
+  createThinkingBlock: jest.fn().mockImplementation(() => ({
     container: {},
     contentEl: {},
     content: '',
     startTime: Date.now(),
-  }),
+  })),
   finalizeThinkingBlock: jest.fn().mockReturnValue(0),
 }));
 
@@ -190,15 +191,53 @@ describe('StreamController - Text Content', () => {
 
       expect(msg.content).toBe('This is a test.');
     });
+
+    it('should coalesce text renders until the next animation frame', async () => {
+      deps.state.currentTextEl = createMockEl();
+
+      await controller.appendText('Hello ');
+      await controller.appendText('World');
+
+      expect(deps.renderer.renderContent).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+
+      expect(deps.renderer.renderContent).toHaveBeenCalledTimes(1);
+      expect(deps.renderer.renderContent).toHaveBeenCalledWith(
+        deps.state.currentTextEl,
+        'Hello World'
+      );
+    });
+
+    it('should flush a pending text render before finalizing text', async () => {
+      const msg = createTestMessage();
+
+      await controller.appendText('Hello');
+      await controller.finalizeCurrentTextBlock(msg);
+
+      expect(deps.renderer.renderContent).toHaveBeenCalledWith(
+        expect.anything(),
+        'Hello'
+      );
+      expect(deps.renderer.addTextCopyButton).toHaveBeenCalledWith(
+        expect.anything(),
+        'Hello'
+      );
+      expect(msg.contentBlocks).toContainEqual({
+        type: 'text',
+        content: 'Hello',
+      });
+    });
   });
 
   describe('Text block finalization', () => {
-    it('should add copy button when finalizing text block with content', () => {
+    it('should add copy button when finalizing text block with content', async () => {
       const msg = createTestMessage();
       deps.state.currentTextEl = createMockEl();
       deps.state.currentTextContent = 'Hello World';
 
-      controller.finalizeCurrentTextBlock(msg);
+      await controller.finalizeCurrentTextBlock(msg);
 
       expect(deps.renderer.addTextCopyButton).toHaveBeenCalledWith(
         expect.anything(),
@@ -210,12 +249,12 @@ describe('StreamController - Text Content', () => {
       });
     });
 
-    it('should not add copy button when no text element exists', () => {
+    it('should not add copy button when no text element exists', async () => {
       const msg = createTestMessage();
       deps.state.currentTextEl = null;
       deps.state.currentTextContent = 'Hello World';
 
-      controller.finalizeCurrentTextBlock(msg);
+      await controller.finalizeCurrentTextBlock(msg);
 
       expect(deps.renderer.addTextCopyButton).not.toHaveBeenCalled();
       // Content block should still be added
@@ -225,23 +264,23 @@ describe('StreamController - Text Content', () => {
       });
     });
 
-    it('should not add copy button when no text content exists', () => {
+    it('should not add copy button when no text content exists', async () => {
       const msg = createTestMessage();
       deps.state.currentTextEl = createMockEl();
       deps.state.currentTextContent = '';
 
-      controller.finalizeCurrentTextBlock(msg);
+      await controller.finalizeCurrentTextBlock(msg);
 
       expect(deps.renderer.addTextCopyButton).not.toHaveBeenCalled();
       expect(msg.contentBlocks).toEqual([]);
     });
 
-    it('should reset text state after finalization', () => {
+    it('should reset text state after finalization', async () => {
       const msg = createTestMessage();
       deps.state.currentTextEl = createMockEl();
       deps.state.currentTextContent = 'Test content';
 
-      controller.finalizeCurrentTextBlock(msg);
+      await controller.finalizeCurrentTextBlock(msg);
 
       expect(deps.state.currentTextEl).toBeNull();
       expect(deps.state.currentTextContent).toBe('');
@@ -310,12 +349,12 @@ describe('StreamController - Text Content', () => {
       const msg = createTestMessage();
       const usage = createMockUsage({ model: undefined });
       const providerSettingsSpy = jest.spyOn(ProviderSettingsCoordinator, 'getProviderSettingsSnapshot');
-      providerSettingsSpy.mockReturnValue({ model: 'gpt-5.4' } as any);
+      providerSettingsSpy.mockReturnValue({ model: DEFAULT_CODEX_PRIMARY_MODEL } as any);
       (deps.getAgentService!() as any).providerId = 'codex';
 
       await controller.handleStreamChunk({ type: 'usage', usage, sessionId: 'session-1' }, msg);
 
-      expect(deps.state.usage).toEqual({ ...usage, model: 'gpt-5.4' });
+      expect(deps.state.usage).toEqual({ ...usage, model: DEFAULT_CODEX_PRIMARY_MODEL });
 
       providerSettingsSpy.mockRestore();
     });
@@ -520,6 +559,11 @@ describe('StreamController - Text Content', () => {
 
       expect(deps.state.pendingTools.size).toBe(0);
       expect(renderToolCall).toHaveBeenCalled();
+      expect(updateToolCallResult).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+
       expect(updateToolCallResult).toHaveBeenCalledWith(
         'bash-1',
         expect.objectContaining({
@@ -537,12 +581,51 @@ describe('StreamController - Text Content', () => {
 
       expect(msg.toolCalls![0].status).toBe('running');
       expect(msg.toolCalls![0].result).toBe('line 1\nline 2\n');
+      expect(updateToolCallResult).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+
       expect(updateToolCallResult).toHaveBeenLastCalledWith(
         'bash-1',
         expect.objectContaining({
           id: 'bash-1',
           status: 'running',
           result: 'line 1\nline 2\n',
+        }),
+        expect.any(Map)
+      );
+    });
+
+    it('should coalesce tool_output renders until the next animation frame', async () => {
+      const { updateToolCallResult } = jest.requireMock('@/features/chat/rendering/ToolCallRenderer');
+      const msg = createTestMessage();
+      deps.state.currentContentEl = createMockEl();
+
+      await controller.handleStreamChunk(
+        { type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'npm test' } },
+        msg
+      );
+      await controller.handleStreamChunk(
+        { type: 'tool_output', id: 'bash-1', content: 'line 1\n' },
+        msg
+      );
+      await controller.handleStreamChunk(
+        { type: 'tool_output', id: 'bash-1', content: 'line 2\n' },
+        msg
+      );
+
+      expect(updateToolCallResult).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+
+      expect(updateToolCallResult).toHaveBeenCalledTimes(1);
+      expect(updateToolCallResult).toHaveBeenCalledWith(
+        'bash-1',
+        expect.objectContaining({
+          result: 'line 1\nline 2\n',
+          status: 'running',
         }),
         expect.any(Map)
       );
@@ -863,7 +946,7 @@ describe('StreamController - Text Content', () => {
     it('uses authoritative usage chunks directly', async () => {
       const msg = createTestMessage();
       const usage = createMockUsage({
-        model: 'gpt-5.4',
+        model: DEFAULT_CODEX_PRIMARY_MODEL,
         contextWindow: 258400,
         contextWindowIsAuthoritative: true,
         contextTokens: 129200,
@@ -1114,7 +1197,7 @@ describe('StreamController - Text Content', () => {
         startTime: Date.now(),
       } as any;
 
-      controller.finalizeCurrentThinkingBlock(msg);
+      await controller.finalizeCurrentThinkingBlock(msg);
 
       expect(msg.contentBlocks).toContainEqual(
         expect.objectContaining({ type: 'thinking', content: 'Let me think...' })
@@ -1122,7 +1205,7 @@ describe('StreamController - Text Content', () => {
       expect(deps.state.currentThinkingState).toBeNull();
     });
 
-    it('should not add to contentBlocks when no thinking content', () => {
+    it('should not add to contentBlocks when no thinking content', async () => {
       const msg = createTestMessage();
       deps.state.currentThinkingState = {
         content: '',
@@ -1131,18 +1214,57 @@ describe('StreamController - Text Content', () => {
         startTime: Date.now(),
       } as any;
 
-      controller.finalizeCurrentThinkingBlock(msg);
+      await controller.finalizeCurrentThinkingBlock(msg);
 
       expect(msg.contentBlocks).toEqual([]);
     });
 
-    it('should be a no-op when no thinking state', () => {
+    it('should be a no-op when no thinking state', async () => {
       const msg = createTestMessage();
       deps.state.currentThinkingState = null;
 
-      controller.finalizeCurrentThinkingBlock(msg);
+      await controller.finalizeCurrentThinkingBlock(msg);
 
       expect(msg.contentBlocks).toEqual([]);
+    });
+
+    it('should coalesce thinking renders until the next animation frame', async () => {
+      const { createThinkingBlock } = jest.requireMock('@/features/chat/rendering/ThinkingBlockRenderer');
+      const msg = createTestMessage();
+      const contentEl = createMockEl();
+      createThinkingBlock.mockReturnValueOnce({
+        wrapperEl: createMockEl(),
+        contentEl,
+        labelEl: createMockEl(),
+        content: '',
+        startTime: Date.now(),
+      });
+
+      await controller.handleStreamChunk({ type: 'thinking', content: 'Let ' }, msg);
+      await controller.handleStreamChunk({ type: 'thinking', content: 'me think' }, msg);
+
+      expect(deps.renderer.renderContent).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+
+      expect(deps.renderer.renderContent).toHaveBeenCalledTimes(1);
+      expect(deps.renderer.renderContent).toHaveBeenCalledWith(contentEl, 'Let me think');
+    });
+
+    it('should flush a pending thinking render before finalizing', async () => {
+      const msg = createTestMessage();
+
+      await controller.handleStreamChunk({ type: 'thinking', content: 'Reasoning' }, msg);
+      await controller.finalizeCurrentThinkingBlock(msg);
+
+      expect(deps.renderer.renderContent).toHaveBeenCalledWith(
+        expect.anything(),
+        'Reasoning'
+      );
+      expect(msg.contentBlocks).toContainEqual(
+        expect.objectContaining({ type: 'thinking', content: 'Reasoning' })
+      );
     });
   });
 
@@ -1826,6 +1948,33 @@ describe('StreamController - Text Content', () => {
         undefined,
         structured
       );
+    });
+
+    it('normalizes structured tool_result content before storing it on tool calls', async () => {
+      const { updateToolCallResult } = jest.requireMock('@/features/chat/rendering/ToolCallRenderer');
+      const msg = createTestMessage();
+      msg.toolCalls = [
+        {
+          id: 'mcp-1',
+          name: 'mcp__stitch__create_project',
+          input: {},
+          status: 'running',
+          isExpanded: false,
+        } as any,
+      ];
+
+      await controller.handleStreamChunk(
+        {
+          type: 'tool_result',
+          id: 'mcp-1',
+          content: [{ type: 'text', text: 'Created project successfully' }],
+        } as any,
+        msg,
+      );
+
+      expect(msg.toolCalls[0].status).toBe('completed');
+      expect(msg.toolCalls[0].result).toBe('Created project successfully');
+      expect(updateToolCallResult).toHaveBeenCalled();
     });
   });
 

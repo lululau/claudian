@@ -8,9 +8,8 @@ import { getVaultPath } from '../../../utils/path';
 import { extractAssistantText } from '../auxiliary/extractAssistantText';
 import { getClaudeProviderSettings } from '../settings';
 import {
-  isAdaptiveThinkingModel,
-  normalizeEffortLevel,
-  THINKING_BUDGETS,
+  resolveAdaptiveEffortLevel,
+  resolveThinkingTokens,
 } from '../types/models';
 import { createCustomSpawnFunction } from './customSpawn';
 
@@ -111,16 +110,21 @@ export async function runColdStartQuery(
     options.resume = config.resumeSessionId;
   }
 
+  if (claudeSettings.safeMode === 'auto') {
+    options.extraArgs = { ...options.extraArgs, 'enable-auto-mode': null };
+  }
+
   if (!config.thinking?.disabled) {
-    if (isAdaptiveThinkingModel(selectedModel)) {
+    const effortLevel = resolveAdaptiveEffortLevel(selectedModel, settings.effortLevel);
+    if (effortLevel !== null) {
       options.thinking = { type: 'adaptive' };
-      options.effort = normalizeEffortLevel(selectedModel, settings.effortLevel);
+      // SDK runtime accepts `xhigh` on Opus 4.7+ and silently falls back to
+      // `high` elsewhere, but its type definition lags our local EffortLevel.
+      options.effort = effortLevel as Options['effort'];
     } else {
-      const budgetConfig = THINKING_BUDGETS.find(
-        b => b.value === settings.thinkingBudget
-      );
-      if (budgetConfig && budgetConfig.tokens > 0) {
-        options.maxThinkingTokens = budgetConfig.tokens;
+      const thinkingTokens = resolveThinkingTokens(selectedModel, settings.thinkingBudget);
+      if (thinkingTokens !== null) {
+        options.maxThinkingTokens = thinkingTokens;
       }
     }
   }

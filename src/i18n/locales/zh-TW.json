@@ -148,8 +148,8 @@
       "desc": "管理儲存在 .claude/commands/ 和 .claude/skills/ 中的 Vault 級命令與技能。由 /名稱 觸發。"
     },
     "hiddenSlashCommands": {
-      "name": "隱藏命令",
-      "desc": "從下拉選單中隱藏特定的斜線命令。適用於隱藏與 Claudian 無關的 Claude Code 命令。每行輸入一個命令名稱，無需前導斜線。",
+      "name": "隱藏命令與技能",
+      "desc": "從下拉選單中隱藏特定的命令與技能。適用於隱藏與 Claudian 無關的 Claude Code 項目。每行輸入一個名稱，無需前導斜線。",
       "placeholder": "commit\nbuild\ntest"
     },
     "mcpServers": {
@@ -247,6 +247,11 @@
     "enableSonnet1M": {
       "name": "Sonnet 1M 上下文視窗",
       "desc": "在模型選擇器中顯示 Sonnet 1M。Max、Team 和 Enterprise 方案需要額外用量。API 和 Pro 使用者需要額外用量。"
+    },
+    "customModels": {
+      "name": "Custom models",
+      "desc": "Append additional Claude model IDs to the picker, one per line. Environment model overrides still replace the picker.",
+      "placeholder": "claude-opus-4-6\nclaude-opus-4-6[1m]\nclaude-opus-4-5-20251101"
     },
     "enableChrome": {
       "name": "啟用 Chrome 擴充功能",

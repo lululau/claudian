@@ -148,8 +148,8 @@
       "desc": ".claude/commands/ 및 .claude/skills/에 저장된 Vault 수준의 명령어와 스킬을 관리합니다. /이름으로 트리거됩니다."
     },
     "hiddenSlashCommands": {
-      "name": "숨겨진 명령어",
-      "desc": "드롭다운에서 특정 슬래시 명령어를 숨깁니다. Claudian과 관련 없는 Claude Code 명령어를 숨기는 데 유용합니다. 앞의 슬래시 없이 한 줄에 하나씩 명령어 이름을 입력하세요.",
+      "name": "숨겨진 명령어와 스킬",
+      "desc": "드롭다운에서 특정 명령어와 스킬을 숨깁니다. Claudian과 관련 없는 Claude Code 항목을 숨기는 데 유용합니다. 앞의 슬래시 없이 이름을 한 줄에 하나씩 입력하세요.",
       "placeholder": "commit\nbuild\ntest"
     },
     "mcpServers": {
@@ -247,6 +247,11 @@
     "enableSonnet1M": {
       "name": "Sonnet 1M 컨텍스트 윈도우",
       "desc": "모델 선택기에서 Sonnet 1M을 표시합니다. Max, Team, Enterprise 플랜에서 추가 사용량이 필요합니다. API 및 Pro 사용자는 추가 사용량이 필요합니다."
+    },
+    "customModels": {
+      "name": "Custom models",
+      "desc": "Append additional Claude model IDs to the picker, one per line. Environment model overrides still replace the picker.",
+      "placeholder": "claude-opus-4-6\nclaude-opus-4-6[1m]\nclaude-opus-4-5-20251101"
     },
     "enableChrome": {
       "name": "Chrome 확장 프로그램 활성화",

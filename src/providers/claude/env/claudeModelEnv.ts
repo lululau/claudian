@@ -1,3 +1,5 @@
+import { formatCustomModelLabel } from '../modelLabels';
+
 const CUSTOM_MODEL_ENV_KEYS = [
   'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -18,9 +20,7 @@ export function getModelsFromEnvironment(envVars: Record<string, string>): { val
     const type = getModelTypeFromEnvKey(envKey);
     const modelValue = envVars[envKey];
     if (modelValue) {
-      const label = modelValue.includes('/')
-        ? modelValue.split('/').pop() || modelValue
-        : modelValue.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      const label = formatCustomModelLabel(modelValue);
 
       if (!modelMap.has(modelValue)) {
         modelMap.set(modelValue, { types: [type], label });

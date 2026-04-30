@@ -2,7 +2,8 @@ import { getProviderConfig, setProviderConfig } from '../../core/providers/provi
 import { getProviderEnvironmentVariables } from '../../core/providers/providerEnvironment';
 import type { HostnameCliPaths } from '../../core/types/settings';
 
-export type ClaudeSafeMode = 'acceptEdits' | 'default';
+export const CLAUDE_SAFE_MODES = ['acceptEdits', 'auto', 'default'] as const;
+export type ClaudeSafeMode = typeof CLAUDE_SAFE_MODES[number];
 
 export interface ClaudeProviderSettings {
   safeMode: ClaudeSafeMode;
@@ -13,6 +14,7 @@ export interface ClaudeProviderSettings {
   enableBangBash: boolean;
   enableOpus1M: boolean;
   enableSonnet1M: boolean;
+  customModels: string;
   lastModel: string;
   environmentVariables: string;
   environmentHash: string;
@@ -27,6 +29,7 @@ export const DEFAULT_CLAUDE_PROVIDER_SETTINGS: Readonly<ClaudeProviderSettings> 
   enableBangBash: false,
   enableOpus1M: false,
   enableSonnet1M: false,
+  customModels: '',
   lastModel: 'haiku',
   environmentVariables: '',
   environmentHash: '',
@@ -46,14 +49,20 @@ function normalizeHostnameCliPaths(value: unknown): HostnameCliPaths {
   return result;
 }
 
+function normalizeClaudeSafeMode(value: unknown): ClaudeSafeMode | undefined {
+  return (CLAUDE_SAFE_MODES as readonly unknown[]).includes(value)
+    ? value as ClaudeSafeMode
+    : undefined;
+}
+
 export function getClaudeProviderSettings(
   settings: Record<string, unknown>,
 ): ClaudeProviderSettings {
   const config = getProviderConfig(settings, 'claude');
 
   return {
-    safeMode: (config.safeMode as ClaudeSafeMode | undefined)
-      ?? (settings.claudeSafeMode as ClaudeSafeMode | undefined)
+    safeMode: normalizeClaudeSafeMode(config.safeMode)
+      ?? normalizeClaudeSafeMode(settings.claudeSafeMode)
       ?? DEFAULT_CLAUDE_PROVIDER_SETTINGS.safeMode,
     cliPath: (config.cliPath as string | undefined)
       ?? (settings.claudeCliPath as string | undefined)
@@ -74,6 +83,8 @@ export function getClaudeProviderSettings(
     enableSonnet1M: (config.enableSonnet1M as boolean | undefined)
       ?? (settings.enableSonnet1M as boolean | undefined)
       ?? DEFAULT_CLAUDE_PROVIDER_SETTINGS.enableSonnet1M,
+    customModels: (config.customModels as string | undefined)
+      ?? DEFAULT_CLAUDE_PROVIDER_SETTINGS.customModels,
     lastModel: (config.lastModel as string | undefined)
       ?? (settings.lastClaudeModel as string | undefined)
       ?? DEFAULT_CLAUDE_PROVIDER_SETTINGS.lastModel,
@@ -90,9 +101,13 @@ export function updateClaudeProviderSettings(
   settings: Record<string, unknown>,
   updates: Partial<ClaudeProviderSettings>,
 ): ClaudeProviderSettings {
+  const current = getClaudeProviderSettings(settings);
   const next = {
-    ...getClaudeProviderSettings(settings),
+    ...current,
     ...updates,
+    safeMode: 'safeMode' in updates
+      ? normalizeClaudeSafeMode(updates.safeMode) ?? current.safeMode
+      : current.safeMode,
   };
   setProviderConfig(settings, 'claude', next);
   return next;

@@ -667,6 +667,42 @@ describe('MessageRenderer', () => {
     expect(renderStoredSubagent).not.toHaveBeenCalled();
   });
 
+  it('infers async running state from structured Task result content', () => {
+    const messagesEl = createMockEl();
+    const { renderer } = createRenderer(messagesEl);
+
+    (renderStoredAsyncSubagent as jest.Mock).mockClear();
+
+    const msg: ChatMessage = {
+      id: 'm-task-async-structured',
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      toolCalls: [
+        {
+          id: 'task-async-structured-1',
+          name: TOOL_TASK,
+          input: { description: 'Background task', run_in_background: true },
+          status: 'completed',
+          result: [{ type: 'text', text: '{"status":"running"}' }] as any,
+        } as any,
+      ],
+      contentBlocks: [
+        { type: 'tool_use', toolId: 'task-async-structured-1' } as any,
+      ],
+    };
+
+    renderer.renderStoredMessage(msg);
+
+    expect(renderStoredAsyncSubagent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: 'task-async-structured-1',
+        asyncStatus: 'running',
+      })
+    );
+  });
+
   it('uses subagent block mode hint when linked subagent mode is missing', () => {
     const messagesEl = createMockEl();
     const { renderer } = createRenderer(messagesEl);
@@ -1026,6 +1062,16 @@ describe('MessageRenderer', () => {
 
     // After render, old content should be gone (empty() was called before rendering)
     expect(el.children.length).toBe(0);
+  });
+
+  it('renderContent should skip file-link post-processing when markdown has no wikilinks', async () => {
+    const { processFileLinks } = await import('@/utils/fileLink');
+    const { renderer } = createRenderer();
+    const el = createMockEl();
+
+    await renderer.renderContent(el, 'plain markdown without links');
+
+    expect(processFileLinks).not.toHaveBeenCalled();
   });
 
   // ============================================
