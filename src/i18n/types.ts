@@ -25,10 +25,15 @@ export type TranslationKey =
 
   // Chat - Rewind
   | 'chat.rewind.confirmMessage'
+  | 'chat.rewind.confirmMessageConversationOnly'
   | 'chat.rewind.confirmButton'
   | 'chat.rewind.ariaLabel'
+  | 'chat.rewind.menuConversationOnly'
+  | 'chat.rewind.menuCodeAndConversation'
   | 'chat.rewind.notice'
+  | 'chat.rewind.noticeConversationOnly'
   | 'chat.rewind.noticeSaveFailed'
+  | 'chat.rewind.noticeConversationOnlySaveFailed'
   | 'chat.rewind.failed'
   | 'chat.rewind.cannot'
   | 'chat.rewind.unavailableStreaming'
@@ -86,6 +91,8 @@ export type TranslationKey =
   | 'settings.titleModel.auto'
   | 'settings.navMappings.name'
   | 'settings.navMappings.desc'
+  | 'settings.requireCommandOrControlEnterToSend.name'
+  | 'settings.requireCommandOrControlEnterToSend.desc'
 
   // Settings - Hotkeys
   | 'settings.hotkeys'
@@ -195,6 +202,9 @@ export type TranslationKey =
   | 'settings.envSnippets.modal.cancel'
 
   // Settings - Custom Context Limits
+  | 'settings.customModelOverrides.name'
+  | 'settings.customModelOverrides.desc'
+  | 'settings.customModelAliases.placeholder'
   | 'settings.customContextLimits.name'
   | 'settings.customContextLimits.desc'
   | 'settings.customContextLimits.invalid'
@@ -221,8 +231,13 @@ export type TranslationKey =
   | 'settings.tabBarPosition.header'
   | 'settings.enableAutoScroll.name'
   | 'settings.enableAutoScroll.desc'
-  | 'settings.openInMainTab.name'
-  | 'settings.openInMainTab.desc'
+  | 'settings.deferMathRenderingDuringStreaming.name'
+  | 'settings.deferMathRenderingDuringStreaming.desc'
+  | 'settings.chatViewPlacement.name'
+  | 'settings.chatViewPlacement.desc'
+  | 'settings.chatViewPlacement.rightSidebar'
+  | 'settings.chatViewPlacement.leftSidebar'
+  | 'settings.chatViewPlacement.mainTab'
   | 'settings.cliPath.name'
   | 'settings.cliPath.desc'
   | 'settings.cliPath.descWindows'

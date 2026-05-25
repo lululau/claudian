@@ -16,7 +16,8 @@ import type {
   ApprovalCallback,
   ApprovalDecisionOption,
   AskUserQuestionCallback,
-  AutoTurnResult,
+  AutoTurnCallback,
+  ChatRewindMode,
   ChatRewindResult,
   ChatRuntimeEnsureReadyOptions,
   ChatRuntimeQueryOptions,
@@ -56,6 +57,7 @@ import {
   buildAcpUsageInfo,
   extractAcpSessionModelState,
   extractAcpSessionModeState,
+  extractAcpSessionThoughtLevelState,
 } from '../../acp';
 import { OPENCODE_PROVIDER_CAPABILITIES } from '../capabilities';
 import { updateOpencodeDiscoveryState } from '../discoveryState';
@@ -64,15 +66,15 @@ import {
   sameModes,
   sameStringList,
   sameStringMap,
+  sameThinkingOptionsByModel,
 } from '../internal/compareCollections';
 import { ensureProviderProjectionMap } from '../internal/providerProjection';
 import {
-  combineOpencodeRawModelSelection,
   decodeOpencodeModelId,
   encodeOpencodeModelId,
-  extractOpencodeModelVariantValue,
   isOpencodeModelSelectionId,
   normalizeOpencodeDiscoveredModels,
+  normalizeOpencodeModelVariants,
   OPENCODE_DEFAULT_THINKING_LEVEL,
   OPENCODE_SYNTHETIC_MODEL_ID,
   resolveOpencodeBaseModelRawId,
@@ -145,6 +147,9 @@ export class OpencodeChatRuntime implements ChatRuntime {
   private contextUsage: AcpUsageUpdate | null = null;
   private currentDatabasePath: string | null = null;
   private currentLaunchKey: string | null = null;
+  private currentSessionEffortConfigId: string | null = null;
+  private currentSessionEffortValue: string | null = null;
+  private currentSessionEffortValues = new Set<string>();
   private currentSessionModelId: string | null = null;
   private currentSessionModeId: string | null = null;
   private currentTurnMetadata: ChatTurnMetadata = {};
@@ -162,6 +167,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
   private readonly sessionUpdateNormalizer = new AcpSessionUpdateNormalizer();
   private readonly toolStreamAdapter = createOpencodeToolStreamAdapter();
   private transport: AcpJsonRpcTransport | null = null;
+  private unregisterTransportClose: (() => void) | null = null;
 
   constructor(
     private readonly plugin: ClaudianPlugin,
@@ -199,6 +205,9 @@ export class OpencodeChatRuntime implements ChatRuntime {
     const previousSessionId = this.sessionId;
     const nextSessionId = conversation?.sessionId ?? null;
     if (this.sessionId !== nextSessionId) {
+      this.currentSessionEffortConfigId = null;
+      this.currentSessionEffortValue = null;
+      this.currentSessionEffortValues = new Set<string>();
       this.currentSessionModelId = null;
       this.currentSessionModeId = null;
       this.sessionInvalidated = false;
@@ -218,8 +227,45 @@ export class OpencodeChatRuntime implements ChatRuntime {
 
   async reloadMcpServers(): Promise<void> {}
 
+  async warmModelMetadata(model: string): Promise<boolean> {
+    const selectedRawModelId = decodeOpencodeModelId(model);
+    if (!selectedRawModelId) {
+      return false;
+    }
+
+    if (!(await this.ensureReady({ allowSessionCreation: true }))) {
+      return false;
+    }
+    if (!this.connection || !this.sessionId) {
+      return false;
+    }
+
+    const discoveredModels = getOpencodeProviderSettings(this.plugin.settings).discoveredModels;
+    const selectedBaseRawModelId = resolveOpencodeBaseModelRawId(selectedRawModelId, discoveredModels);
+    if (!selectedBaseRawModelId) {
+      return false;
+    }
+
+    const availableModelIds = new Set(discoveredModels.map((entry) => entry.rawId));
+    if (availableModelIds.size > 0 && !availableModelIds.has(selectedBaseRawModelId)) {
+      return false;
+    }
+
+    const response = await this.connection.setConfigOption({
+      configId: 'model',
+      sessionId: this.sessionId,
+      type: 'select',
+      value: selectedBaseRawModelId,
+    });
+    this.currentSessionModelId = selectedBaseRawModelId;
+    await this.syncSessionModelState({
+      configOptions: response.configOptions,
+    });
+    return true;
+  }
+
   async ensureReady(options?: ChatRuntimeEnsureReadyOptions): Promise<boolean> {
-    const settings = getOpencodeProviderSettings(this.plugin.settings as unknown as Record<string, unknown>);
+    const settings = getOpencodeProviderSettings(this.plugin.settings);
     if (!settings.enabled) {
       this.setReady(false);
       return false;
@@ -243,7 +289,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
     const nextLaunchKey = JSON.stringify({
       command: resolvedCliPath,
       configPath: artifacts.configPath,
-      envText: getRuntimeEnvironmentText(this.plugin.settings as unknown as Record<string, unknown>, 'opencode'),
+      envText: getRuntimeEnvironmentText(this.plugin.settings, 'opencode'),
       promptKey: computeSystemPromptKey(promptSettings),
       artifactKey: artifacts.launchKey,
     });
@@ -252,6 +298,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
       || !this.transport
       || !this.connection
       || !this.process.isAlive()
+      || this.transport.isClosed
       || options?.force === true
       || this.currentLaunchKey !== nextLaunchKey;
 
@@ -340,6 +387,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
     try {
       await this.applySelectedMode(sessionId);
       await this.applySelectedModel(sessionId, queryOptions);
+      await this.applySelectedEffort(sessionId);
     } catch (error) {
       yield {
         type: 'error',
@@ -463,6 +511,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
   async rewind(
     _userMessageId: string,
     _assistantMessageId: string,
+    _mode?: ChatRewindMode,
   ): Promise<ChatRewindResult> {
     return { canRewind: false };
   }
@@ -483,7 +532,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
 
   setSubagentHookProvider(_getState: () => SubagentRuntimeState): void {}
 
-  setAutoTurnCallback(_callback: ((result: AutoTurnResult) => void) | null): void {}
+  setAutoTurnCallback(_callback: AutoTurnCallback | null): void {}
 
   consumeTurnMetadata(): ChatTurnMetadata {
     const metadata = this.currentTurnMetadata;
@@ -561,6 +610,12 @@ export class OpencodeChatRuntime implements ChatRuntime {
       onClose: (listener) => this.process!.onClose(listener),
       output: this.process.stdin,
     });
+    const transport = this.transport;
+    this.unregisterTransportClose = transport.onClose(() => {
+      if (this.transport === transport) {
+        this.setReady(false);
+      }
+    });
 
     this.connection = new AcpClientConnection({
       clientInfo: {
@@ -590,6 +645,9 @@ export class OpencodeChatRuntime implements ChatRuntime {
     this.currentSessionModelId = null;
     this.currentSessionModeId = null;
     this.setSupportedCommands([]);
+
+    this.unregisterTransportClose?.();
+    this.unregisterTransportClose = null;
 
     this.connection?.dispose();
     this.connection = null;
@@ -628,7 +686,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
     databasePathOverride?: string | null,
   ): NodeJS.ProcessEnv {
     return buildOpencodeRuntimeEnv(
-      this.plugin.settings as unknown as Record<string, unknown>,
+      this.plugin.settings,
       cliPath,
       databasePathOverride,
     );
@@ -636,7 +694,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
 
   private getProviderSettings(): Record<string, unknown> {
     return ProviderSettingsCoordinator.getProviderSettingsSnapshot(
-      this.plugin.settings as unknown as Record<string, unknown>,
+      this.plugin.settings,
       this.providerId,
     );
   }
@@ -659,25 +717,17 @@ export class OpencodeChatRuntime implements ChatRuntime {
     }
 
     const discoveredModels = getOpencodeProviderSettings(providerSettings).discoveredModels;
-    const effortLevel = typeof providerSettings.effortLevel === 'string'
-      ? providerSettings.effortLevel
-      : OPENCODE_DEFAULT_THINKING_LEVEL;
     const normalizedBaseRawModelId = resolveOpencodeBaseModelRawId(selectedBaseRawModelId, discoveredModels);
-    const resolvedRawModelId = combineOpencodeRawModelSelection(
-      normalizedBaseRawModelId,
-      effortLevel,
-      discoveredModels,
-    );
-    if (!resolvedRawModelId) {
+    if (!normalizedBaseRawModelId) {
       return null;
     }
 
     const availableModelIds = new Set(discoveredModels.map((model) => model.rawId));
-    if (availableModelIds.size > 0 && !availableModelIds.has(resolvedRawModelId)) {
+    if (availableModelIds.size > 0 && !availableModelIds.has(normalizedBaseRawModelId)) {
       return null;
     }
 
-    return resolvedRawModelId;
+    return normalizedBaseRawModelId;
   }
 
   getAuxiliaryModel(): string | null {
@@ -778,12 +828,48 @@ export class OpencodeChatRuntime implements ChatRuntime {
     });
   }
 
+  private resolveSelectedEffortValue(): string | null {
+    const providerSettings = this.getProviderSettings();
+    const selectedEffort = typeof providerSettings.effortLevel === 'string'
+      ? providerSettings.effortLevel.trim()
+      : '';
+    if (!selectedEffort || selectedEffort === OPENCODE_DEFAULT_THINKING_LEVEL) {
+      return null;
+    }
+
+    return this.currentSessionEffortValues.has(selectedEffort)
+      ? selectedEffort
+      : null;
+  }
+
+  private async applySelectedEffort(sessionId: string): Promise<void> {
+    if (!this.connection || !this.currentSessionEffortConfigId) {
+      return;
+    }
+
+    const selectedEffort = this.resolveSelectedEffortValue();
+    if (!selectedEffort || selectedEffort === this.currentSessionEffortValue) {
+      return;
+    }
+
+    const response = await this.connection.setConfigOption({
+      configId: this.currentSessionEffortConfigId,
+      sessionId,
+      type: 'select',
+      value: selectedEffort,
+    });
+    this.currentSessionEffortValue = selectedEffort;
+    await this.syncSessionModelState({
+      configOptions: response.configOptions,
+    });
+  }
+
   private async syncSessionModelState(params: {
     configOptions?: AcpSessionConfigOption[] | null;
     models?: AcpSessionModelState | null;
   }): Promise<void> {
     const acpState = extractAcpSessionModelState(params);
-    const currentRawModelId = acpState.currentModelId;
+    const currentRawModelId = acpState.currentModelId ?? this.currentSessionModelId;
     const discoveredModels = normalizeOpencodeDiscoveredModels(
       acpState.availableModels.map((model) => ({
         ...(model.description ? { description: model.description } : {}),
@@ -800,13 +886,48 @@ export class OpencodeChatRuntime implements ChatRuntime {
     const currentBaseRawModelId = currentRawModelId
       ? resolveOpencodeBaseModelRawId(currentRawModelId, discoveredModels)
       : null;
-    const currentThinkingLevel = currentRawModelId
-      ? extractOpencodeModelVariantValue(currentRawModelId, discoveredModels)
+    const thoughtLevelState = extractAcpSessionThoughtLevelState(params);
+    const currentThinkingOptions = normalizeOpencodeModelVariants(
+      thoughtLevelState.availableLevels.map((level) => ({
+        ...(level.description ? { description: level.description } : {}),
+        label: level.name,
+        value: level.id,
+      })),
+    );
+    const currentThinkingLevel = thoughtLevelState.currentLevel;
+    this.currentSessionEffortConfigId = currentThinkingOptions.length > 0
+      ? thoughtLevelState.configId
       : null;
+    this.currentSessionEffortValue = currentThinkingOptions.length > 0
+      ? currentThinkingLevel
+      : null;
+    this.currentSessionEffortValues = new Set(currentThinkingOptions.map((option) => option.value));
+
+    const nextThinkingOptionsByModel = { ...currentSettings.thinkingOptionsByModel };
+    if (currentBaseRawModelId) {
+      if (currentThinkingOptions.length > 0) {
+        nextThinkingOptionsByModel[currentBaseRawModelId] = currentThinkingOptions;
+      } else {
+        delete nextThinkingOptionsByModel[currentBaseRawModelId];
+      }
+    }
+
     const nextVisibleModels = currentSettings.visibleModels.length === 0 && currentBaseRawModelId
       ? [currentBaseRawModelId]
       : currentSettings.visibleModels;
-    const nextPreferredThinkingByModel = currentBaseRawModelId && currentThinkingLevel
+    const currentPreferredThinking = currentBaseRawModelId
+      ? currentSettings.preferredThinkingByModel[currentBaseRawModelId]
+      : '';
+    const shouldSeedCurrentThinking = currentBaseRawModelId
+      && currentThinkingLevel
+      && (
+        !currentPreferredThinking
+        || (
+          currentThinkingOptions.length > 0
+          && !this.currentSessionEffortValues.has(currentPreferredThinking)
+        )
+      );
+    const nextPreferredThinkingByModel = shouldSeedCurrentThinking && currentBaseRawModelId && currentThinkingLevel
       ? {
         ...currentSettings.preferredThinkingByModel,
         [currentBaseRawModelId]: currentThinkingLevel,
@@ -817,17 +938,15 @@ export class OpencodeChatRuntime implements ChatRuntime {
       currentSettings.preferredThinkingByModel,
       nextPreferredThinkingByModel,
     );
-    const discoveryChanged = discoveredModels.length > 0
-      && !sameDiscoveredModels(currentSettings.discoveredModels, discoveredModels)
+    const shouldUpdateDiscoveredModels = discoveredModels.length > 0
+      && !sameDiscoveredModels(currentSettings.discoveredModels, discoveredModels);
+    const shouldUpdateThinkingOptions = !sameThinkingOptionsByModel(
+      currentSettings.thinkingOptionsByModel,
+      nextThinkingOptionsByModel,
+    );
+    const discoveryChanged = shouldUpdateDiscoveredModels
       && updateOpencodeDiscoveryState(settingsBag, { discoveredModels });
     let changed = shouldSeedVisibleModels || shouldSeedPreferredThinking;
-
-    if (changed) {
-      updateOpencodeProviderSettings(settingsBag, {
-        ...(shouldSeedPreferredThinking ? { preferredThinkingByModel: nextPreferredThinkingByModel } : {}),
-        ...(shouldSeedVisibleModels ? { visibleModels: nextVisibleModels } : {}),
-      });
-    }
 
     if (currentBaseRawModelId) {
       const seeded = this.seedActiveModelSelection(
@@ -838,11 +957,19 @@ export class OpencodeChatRuntime implements ChatRuntime {
       changed = changed || seeded;
     }
 
-    if (!changed && !discoveryChanged) {
+    if (shouldUpdateThinkingOptions || shouldSeedPreferredThinking || shouldSeedVisibleModels) {
+      updateOpencodeProviderSettings(settingsBag, {
+        ...(shouldSeedPreferredThinking ? { preferredThinkingByModel: nextPreferredThinkingByModel } : {}),
+        ...(shouldUpdateThinkingOptions ? { thinkingOptionsByModel: nextThinkingOptionsByModel } : {}),
+        ...(shouldSeedVisibleModels ? { visibleModels: nextVisibleModels } : {}),
+      });
+    }
+
+    if (!changed && !discoveryChanged && !shouldUpdateThinkingOptions) {
       return;
     }
 
-    if (changed) {
+    if (changed || shouldUpdateThinkingOptions) {
       await this.plugin.saveSettings();
     }
     this.refreshModelSelectors();
@@ -865,7 +992,10 @@ export class OpencodeChatRuntime implements ChatRuntime {
 
     if (thinkingLevel) {
       const savedProviderEffort = ensureProviderProjectionMap(settingsBag, 'savedProviderEffort');
-      if (typeof savedProviderEffort.opencode !== 'string' || !savedProviderEffort.opencode) {
+      const savedEffort = typeof savedProviderEffort.opencode === 'string'
+        ? savedProviderEffort.opencode.trim()
+        : '';
+      if (!savedEffort || savedEffort === OPENCODE_DEFAULT_THINKING_LEVEL) {
         savedProviderEffort.opencode = thinkingLevel;
         changed = true;
       }
@@ -882,7 +1012,7 @@ export class OpencodeChatRuntime implements ChatRuntime {
     }
     if (thinkingLevel) {
       const activeEffort = typeof settingsBag.effortLevel === 'string' ? settingsBag.effortLevel : '';
-      if (!activeEffort) {
+      if (!activeEffort || activeEffort === OPENCODE_DEFAULT_THINKING_LEVEL) {
         settingsBag.effortLevel = thinkingLevel;
         changed = true;
       }
@@ -1118,10 +1248,10 @@ export class OpencodeChatRuntime implements ChatRuntime {
 
     return new Promise<SlashCommand[]>((resolve) => {
       const waiter = (commands: SlashCommand[]) => {
-        clearTimeout(timeoutId);
+        window.clearTimeout(timeoutId);
         resolve([...commands]);
       };
-      const timeoutId = setTimeout(() => {
+      const timeoutId = window.setTimeout(() => {
         const index = this.supportedCommandWaiters.indexOf(waiter);
         if (index >= 0) {
           this.supportedCommandWaiters.splice(index, 1);

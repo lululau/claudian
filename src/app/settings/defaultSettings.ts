@@ -22,12 +22,14 @@ export const DEFAULT_CLAUDIAN_SETTINGS: ClaudianSettings = {
   sharedEnvironmentVariables: '',
   envSnippets: [],
   customContextLimits: {},
+  customModelAliases: {},
 
   keyboardNavigation: {
     scrollUpKey: 'w',
     scrollDownKey: 's',
     focusInputKey: 'i',
   },
+  requireCommandOrControlEnterToSend: false,
 
   locale: 'en',
 
@@ -45,7 +47,8 @@ export const DEFAULT_CLAUDIAN_SETTINGS: ClaudianSettings = {
   maxTabs: 3,
   tabBarPosition: 'input',
   enableAutoScroll: true,
-  openInMainTab: false,
+  deferMathRenderingDuringStreaming: true,
+  chatViewPlacement: 'right-sidebar',
 
   hiddenProviderCommands: getDefaultHiddenProviderCommands(),
 };

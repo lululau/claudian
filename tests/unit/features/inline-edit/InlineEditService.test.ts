@@ -361,7 +361,7 @@ describe('InlineEditService', () => {
       });
 
       const options = getLastOptions();
-      expect(options?.settingSources).toEqual(['project']);
+      expect(options?.settingSources).toEqual(['project', 'local']);
     });
 
     it('should set settingSources to include user when loadUserClaudeSettings is true', async () => {
@@ -385,7 +385,7 @@ describe('InlineEditService', () => {
       });
 
       const options = getLastOptions();
-      expect(options?.settingSources).toEqual(['user', 'project']);
+      expect(options?.settingSources).toEqual(['user', 'project', 'local']);
     });
 
     it('should set adaptive thinking for Claude models', async () => {
@@ -413,9 +413,10 @@ describe('InlineEditService', () => {
       expect(options?.maxThinkingTokens).toBeUndefined();
     });
 
-    it('should set thinking budget for custom models', async () => {
+    it('should set adaptive thinking with effort for custom models', async () => {
       mockPlugin.settings.model = 'custom-model';
       mockPlugin.settings.thinkingBudget = 'medium';
+      mockPlugin.settings.effortLevel = 'medium';
       service = new InlineEditService(mockPlugin);
 
       setMockMessages([
@@ -435,8 +436,9 @@ describe('InlineEditService', () => {
       });
 
       const options = getLastOptions();
-      expect(options?.maxThinkingTokens).toBeGreaterThan(0);
-      expect(options?.thinking).toBeUndefined();
+      expect(options?.thinking).toEqual({ type: 'adaptive' });
+      expect(options?.effort).toBe('medium');
+      expect(options?.maxThinkingTokens).toBeUndefined();
     });
 
     it('should capture session ID for conversation continuity', async () => {
